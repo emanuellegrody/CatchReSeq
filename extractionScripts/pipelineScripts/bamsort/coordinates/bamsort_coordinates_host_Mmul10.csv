@@ -1,0 +1,38 @@
+# Per-target alignment regions. Multiple rows per gene are allowed: each row
+# becomes its own category downstream (extract_category_host returns the Target
+# string), so the worker filter accepts any Target that == sample or starts
+# with "<sample>_".
+#
+# Start/End define the region passed to bamsort_alignment_reads_host.py.
+#   - For alt cassettes: M-overlap = inclusion, N-gap fully spanning = exclusion.
+#   - For "<gene>_constant" rows: a downstream constant exon used as a
+#     denominator / "any spliced mRNA" marker; exclusion isn't meaningful here.
+# Strand and Upstream/Downstream exons are used by BRIE2 GFF builder
+# (build_brie_gff_targets.py); flanks are the adjacent annotated exons. Leave
+# BRIE2 columns blank for genes you don't intend to test for splicing.
+#
+# PTPRC: primer in exon 2 (chr1:56060491-56060515 +). The CD45 variable block
+# is Ensembl canonical exons 4, 5, 6 = cassettes A, B, C, whose skipping
+# defines the RA -> RO transition. Constant marker is exon 9, the first exon
+# downstream of the block that is present in every transcript.
+#
+# IL7R: primer in exon 5 (chr6:35650836-35650860 +); skipping the TM exon
+# (full-length IL7R-202 exon 6, 35651687-35651780; verified by translation --
+# encodes the aa 245-263 transmembrane helix) produces soluble IL7R. The
+# 35652752-35652827 exon just downstream encodes the juxtamembrane/cytoplasmic
+# region (aa 267-292) and is used here as the downstream flank. Constant marker
+# is exon 8 (35653222-35656837).
+#
+# BCL2L1: primer at chr10:66965518-66965539 lies INSIDE the 189-nt cassette
+# that is retained in BCL-xL but spliced out in BCL-xS via an alternative 5'
+# donor near +66965682. Reads at this primer can only originate from BCL-xL
+# transcripts -- BCL-xS has no primer binding site -- so this target cannot
+# distinguish the two isoforms.
+Target,Chr,Start,End,Strand,Upstream_Start,Upstream_End,Downstream_Start,Downstream_End
+PTPRC_constant,1,56130546,56130779,+,,,,
+PTPRC_exon4,1,56120242,56120439,+,56115496,56115522,56123100,56123240
+PTPRC_exon5,1,56123100,56123240,+,56120242,56120439,56125951,56126094
+PTPRC_exon6,1,56125951,56126094,+,56123100,56123240,56126873,56126947
+IL7R_constant,6,35653222,35656837,+,,,,
+IL7R_exon6_TM,6,35651687,35651780,+,35650727,35650895,35652752,35652827
+BCL2L1,10,66965500,66965560,,,,,

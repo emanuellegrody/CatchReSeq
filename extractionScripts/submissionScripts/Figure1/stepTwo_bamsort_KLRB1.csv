@@ -1,0 +1,3 @@
+sample,output_prefix,bam,output_root
+W0_GEX,W0_GEX,extractedData/Figure1/singleCell/counts/Mmul_10_mac239/Mmul_10_mac239_W0/outs/possorted_genome_bam.bam,extractedData/Figure1/singleCell/bamsort/alignment/KLRB1/
+W0_KLRB1_PL,W0_KLRB1_PL,extractedData/Figure1/CaRe/counts/Mmul_10_mac239/Mmul_10_mac239_W0_KLRB1_PL/outs/possorted_genome_bam.bam,extractedData/Figure1/CaRe/bamsort/alignment/KLRB1/

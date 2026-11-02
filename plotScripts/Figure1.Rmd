@@ -1,0 +1,1257 @@
+---
+title: "Figure1"
+author: "Emanuelle Grody"
+output: html_document
+---
+
+Source this files first before running any analysis:
+
+```{r, message=FALSE, warning=FALSE}
+source("packages.R")
+source("config.R")
+source("functions.R")
+```
+
+For each top tier section (`#`), Extraction must be run before Plotting
+
+# KLRB1
+
+## Extraction
+
+Prerequisites: the per-library whole-gene alignment tables from
+`extractionScripts/submissionScripts/Figure1/stepTwo_bamsort_KLRB1.sh`, and
+`Figure1/singleCell/Seurat/UMAPcoords/W0UMAP_coords.csv` for the UMAP
+coordinates and clusters the `### joint` chunk joins onto — run the
+`### Seurat objects` chunk under `# SIV` to write it.
+
+### TenX
+```{r TenX bamsort}
+input.dir <- paste0(data.root, "Figure1/singleCell/bamsort/alignment/KLRB1/")
+output.dir <- paste0(data.root, "Figure1/singleCell/bamsort/reads/KLRB1")
+
+raw_cellIDs <- read.csv(paste0(data.root, "Figure1/singleCell/raw_cellIDs/W0_raw_cellIDs.csv"))
+
+# processing
+dir.create(output.dir, recursive = TRUE, showWarnings = FALSE)
+
+filename <- "W0_GEX_bamsort_alignment_KLRB1.csv"
+sample_files <- paste0(input.dir, filename)
+
+extracted_data <- NULL  # Initialize as NULL for each file
+all_data <- NULL
+
+tryCatch({
+  file_data <- fread(sample_files, data.table = FALSE)
+  if(nrow(file_data) == 0) {
+    cat("Warning: File is empty:", filename, "\n")
+    next
+  }
+
+  required_cols <- c("cellID", "UMI", "count")
+  missing_cols <- setdiff(required_cols, colnames(file_data))
+  
+  if (length(missing_cols) > 0) {
+    cat("Warning: Missing required columns:", paste(missing_cols, collapse=", "), "\n")
+    cat("Available columns:", paste(colnames(file_data), collapse=", "), "\n")
+    next
+  }
+
+  extracted_data <- file_data %>%
+    select(cellID, UMI, count) %>%
+    rename(read = count) %>% 
+    mutate(category = "KLRB1")
+  
+}, error = function(e) {
+  cat("Error reading file:", filename, "\nLikely bad data file\n")
+  cat("Error message:", conditionMessage(e), "\n")
+})
+
+if (!is.null(extracted_data) && nrow(extracted_data) > 0) {
+  all_data <- rbind(all_data, extracted_data)
+}
+# Remove any rows with NA values and unique
+all_data <- all_data %>% 
+  filter(!is.na(cellID) & !is.na(UMI) & !is.na(read)) %>%
+  unique()
+
+tryCatch({
+  umi_read_counts <- all_data %>%
+    group_by(cellID, UMI, category) %>%
+    summarize(
+      read_count = sum(as.numeric(read)),
+      .groups = 'drop'
+    )
+  
+  cat("Gathered read counts for", nrow(umi_read_counts), "UMIs from", 
+      n_distinct(umi_read_counts$cellID), "cells\n")
+
+  umi_by_category <- umi_read_counts %>%
+    group_by(cellID, category) %>%
+    summarize(
+      category_UMIs = n_distinct(UMI),
+      category_reads = sum(read_count),
+      .groups = 'drop'
+    )
+
+  umi_by_category_wide <- tidyr::pivot_wider(
+    umi_by_category,
+    id_cols = cellID,
+    names_from = category,
+    names_sep = "_",
+    values_from = c(category_UMIs, category_reads),
+    values_fill = 0)
+  
+  # Apply raw_cellIDs filter
+    valid_cells <- raw_cellIDs$cellID
+    cat("Keeping only cells in", 
+        length(valid_cells), "valid cells from 10X data\n")
+    
+    # Filter the UMI-level data
+    filtered_umi_read_counts <- umi_read_counts %>%
+      filter(cellID %in% valid_cells)
+  
+  
+  # Save the UMI-level data
+  umi_level_file <- file.path(output.dir, "W0_UMI_read_counts_raw.csv")
+  write.csv(umi_read_counts, file = umi_level_file, row.names = FALSE)
+  
+  filtered_umi_level_file <- file.path(output.dir, "W0_UMI_read_counts_full.csv")
+  write.csv(filtered_umi_read_counts, file = filtered_umi_level_file, row.names = FALSE)
+  
+  cat("Successfully processed\n")
+  rm(umi_by_category, umi_by_category_wide, umi_read_counts)
+}, error = function(e) {
+  cat("Error processing data for sample", sample, ":", conditionMessage(e), "\n")
+  
+  # Try to save the raw data at least
+  raw_file <- file.path(output.dir, paste0(sample, "_raw_data.csv"))
+  write.csv(all_data, file = raw_file, row.names = FALSE)
+  cat("Saved raw data to:", raw_file, "\n")
+})
+
+# minimums
+input <- paste0(data.root, "Figure1/singleCell/bamsort/reads/KLRB1/W0_UMI_read_counts_full.csv")
+output_dir <- paste0(data.root, "Figure1/singleCell/bamsort/reads/KLRB1/minimum/") 
+dir.create(output_dir, recursive = TRUE, showWarnings = FALSE)
+
+W0_min <- set_minimums("KLRB1", input, min_reads = 1, min_umi = 1)
+write.csv(W0_min, paste0(output_dir, "W0_minread1_minumi1.csv"))
+
+```
+
+### Ca*Re
+
+Prerequisites: the Ca*Re rows of `stepTwo_bamsort_KLRB1.sh`.
+
+```{r}
+input.dir <- paste0(data.root, "Figure1/CaRe/bamsort/alignment/KLRB1/")
+output.dir <- paste0(data.root, "Figure1/CaRe/bamsort/reads/KLRB1")
+
+raw_cellIDs <- read.csv(paste0(data.root, "Figure1/singleCell/raw_cellIDs/W0_raw_cellIDs.csv"))
+
+filename <- "W0_KLRB1_PL_bamsort_alignment_KLRB1.csv"
+sample_files <- paste0(input.dir, filename)
+
+extracted_data <- NULL 
+
+tryCatch({
+  file_data <- fread(sample_files, data.table = FALSE)
+  
+  if(nrow(file_data) == 0) {
+    cat("Warning: File is empty:", filename, "\n")
+    next
+  }
+  
+  required_cols <- c("cellID", "UMI", "count")
+  
+  missing_cols <- setdiff(required_cols, colnames(file_data))
+  
+  if (length(missing_cols) > 0) {
+    cat("Warning: Missing required columns:", paste(missing_cols, collapse=", "), "\n")
+    cat("Available columns:", paste(colnames(file_data), collapse=", "), "\n")
+    next
+  }
+  
+  extracted_data <- file_data %>%
+    select(cellID, UMI, count) %>%
+    rename(read = count) %>% 
+    mutate(category = "KLRB1")
+  
+}, error = function(e) {
+  cat("Error reading file:", filename, "\nLikely bad data file\n")
+  cat("Error message:", conditionMessage(e), "\n")
+})
+
+if (!is.null(extracted_data) && nrow(extracted_data) > 0) {
+  all_data <- rbind(all_data, extracted_data)
+}
+all_data <- all_data %>% 
+  filter(!is.na(cellID) & !is.na(UMI) & !is.na(read)) %>%
+  unique()
+
+tryCatch({
+  umi_read_counts <- all_data %>%
+    group_by(cellID, UMI, category) %>%
+    summarize(
+      read_count = sum(as.numeric(read)), 
+      .groups = 'drop'
+    )
+  
+  cat("Gathered read counts for", nrow(umi_read_counts), "UMIs from", 
+      n_distinct(umi_read_counts$cellID), "cells\n")
+  
+  umi_by_category <- umi_read_counts %>%
+    group_by(cellID, category) %>%
+    summarize(
+      category_UMIs = n_distinct(UMI),
+      category_reads = sum(read_count),
+      .groups = 'drop'
+    )
+  
+  umi_by_category_wide <- tidyr::pivot_wider(
+    umi_by_category,
+    id_cols = cellID,
+    names_from = category,
+    names_sep = "_",
+    values_from = c(category_UMIs, category_reads),
+    values_fill = 0)
+  
+  # Apply raw_cellIDs filter
+    valid_cells <- raw_cellIDs$cellID
+    cat("Keeping only cells in", 
+        length(valid_cells), "valid cells from 10X data\n")
+    
+    # Filter the UMI-level data
+    filtered_umi_read_counts <- umi_read_counts %>%
+      filter(cellID %in% valid_cells)
+  
+  
+  # Save the UMI-level data
+  umi_level_file <- file.path(output.dir, "W0_UMI_read_counts_raw.csv")
+  write.csv(umi_read_counts, file = umi_level_file, row.names = FALSE)
+  
+  filtered_umi_level_file <- file.path(output.dir, "W0_UMI_read_counts_full.csv")
+  write.csv(filtered_umi_read_counts, file = filtered_umi_level_file, row.names = FALSE)
+  
+  cat("Successfully processed\n")
+  rm(umi_by_category, umi_by_category_wide, umi_read_counts)
+}, error = function(e) {
+  cat("Error processing data for sample", sample, ":", conditionMessage(e), "\n")
+  
+  # Try to save the raw data at least
+  raw_file <- file.path(output.dir, paste0(sample, "_raw_data.csv"))
+  write.csv(all_data, file = raw_file, row.names = FALSE)
+  cat("Saved raw data to:", raw_file, "\n")
+})
+
+# minimums
+input <- paste0(data.root, "Figure1/CaRe/bamsort/reads/KLRB1/W0_UMI_read_counts_full.csv")
+output_dir <- paste0(data.root, "Figure1/CaRe/bamsort/reads/KLRB1/minimum/") 
+dir.create(output_dir, recursive = TRUE, showWarnings = FALSE)
+
+W0_min <- set_minimums("KLRB1", input, min_reads = 5, min_umi = 1)
+write.csv(W0_min, paste0(output_dir, "CaRe_KLRB1_W0_CaRe_minreads5.csv"))
+```
+
+
+### joint
+
+Prerequisites: the `### TenX` and `### Ca*Re` chunks above, and the
+`### Seurat objects` chunk under `# SIV` for `W0UMAP_coords.csv`.
+
+```{r}
+# Loading
+input.dir <- paste0(data.root, "Figure1/CaRe/bamsort/reads/KLRB1/minimum/")
+W0_min <- read.csv(paste0(input.dir, "CaRe_KLRB1_W0_CaRe_minreads5.csv"), row.names = "X")
+CaRe_KLRB1_W0 <- W0_min %>%
+  select(-total) %>%
+  mutate(KLRB1 = log1p(KLRB1))
+
+input.dir <- paste0(data.root, "Figure1/singleCell/bamsort/reads/KLRB1/minimum/") 
+TenX_KLRB1_W0 <- read.csv(paste0(input.dir, "W0_minread1_minumi1.csv"), row.names = "X")
+TenX_KLRB1_W0 <- TenX_KLRB1_W0 %>%
+  select(-total) %>%
+  mutate(KLRB1 = log1p(KLRB1))
+
+TenX_KLRB1_W0_coords <- read.csv(paste0(data.root, "Figure1/singleCell/Seurat/UMAPcoords/W0UMAP_coords.csv"), row.names = "X")
+TenX_KLRB1_W0_coords <- TenX_KLRB1_W0_coords %>% select(cellID, UMAP1, UMAP2, cluster)
+TenX_KLRB1_W0 <- left_join(TenX_KLRB1_W0_coords, TenX_KLRB1_W0, by = "cellID")
+
+
+# Joining
+W0_joint <- left_join(TenX_KLRB1_W0, CaRe_KLRB1_W0, by = "cellID") %>%
+  rename(GEX = KLRB1.x, CaRe = KLRB1.y)
+W0_joint[is.na(W0_joint)] <- 0
+
+
+# Saving
+name <- "W0_joint"
+current_df <- get(name)
+both <- current_df %>% filter(GEX != 0 & CaRe != 0)
+onlySingleCell <- current_df %>% 
+  filter(GEX != 0) %>%
+  filter(!(cellID %in% both$cellID))
+onlyCaRe <- current_df %>% 
+  filter(CaRe != 0) %>%
+  filter(!(cellID %in% both$cellID))
+
+output_dir <- paste0(data.root, "Figure1/joint/dataframes/")
+dir.create(output_dir, recursive = TRUE, showWarnings = FALSE)
+write.csv(both, paste0(output_dir, "KLRB1_both.csv"), row.names = FALSE)
+write.csv(onlySingleCell, paste0(output_dir, "KLRB1_onlySingleCell.csv"), row.names = FALSE)
+write.csv(onlyCaRe, paste0(output_dir, "KLRB1_onlyCaRe.csv"), row.names = FALSE)
+write.csv(current_df, paste0(output_dir, "KLRB1_all.csv"), row.names = FALSE)
+```
+
+## Plotting
+
+Prerequisites: the `### joint` chunk above, which writes `KLRB1_all.csv`.
+
+```{r}
+output.dir <- paste0(plot.root, "Figure1/")
+dir.create(output.dir, recursive = TRUE, showWarnings = FALSE)
+supp.dir <- paste0(plot.root, "Supplemental/SuppFig1/")
+dir.create(supp.dir, recursive = TRUE, showWarnings = FALSE)
+
+# Loading
+input_dir <- paste0(data.root, "Figure1/joint/dataframes/")
+W0_joint <- read.csv(paste0(input_dir, "KLRB1_all.csv"))
+
+both <- W0_joint %>% filter(GEX != 0 & CaRe != 0)
+onlySingleCell <- W0_joint %>% 
+  filter(GEX != 0) %>%
+  filter(!(cellID %in% both$cellID))
+onlyCaRe <- W0_joint %>% 
+  filter(CaRe != 0) %>%
+  filter(!(cellID %in% both$cellID))
+# Fraction of the TenX KLRB1 signal that Ca*Re also captured
+tenx_total    <- sum(expm1(W0_joint$GEX))
+tenx_captured <- sum(expm1(both$GEX))
+cat("\n# UMI in TenX total:\t",        tenx_total,
+    "\n# UMI captured by Ca*Re:\t",   tenx_captured,
+    "\n% UMI captured by Ca*Re:\t",   round(tenx_captured / tenx_total * 100, 2), "%",
+    "\n# Cells in TenX total:\t",      sum(W0_joint$GEX > 0),
+    "\n# Cells captured by Ca*Re:\t", nrow(both),
+    "\n% Cells captured by Ca*Re:\t",
+    round(nrow(both) / sum(W0_joint$GEX > 0) * 100, 2), "%\n")
+
+# Density UMAPs
+klrb1_scale <- umapDensityScale(W0_joint, c("GEX", "CaRe"))
+plotDensityUMAP(W0_joint, colorby = GEX,
+         "W0 joint KLRB1: TenX (bamsort)",
+         output.dir,
+         "PanelB_UMAPdensity_KLRB1_GEX.pdf",
+         density_scale = klrb1_scale, color = "#414042",
+         legend_label = "KLRB1+ cells per 1% of UMAP area")
+plotDensityUMAP(W0_joint, colorby = CaRe,
+         "W0 joint KLRB1: CaRe (bamsort)",
+         output.dir,
+         "PanelB_UMAPdensity_KLRB1_CaRe_minreads5.pdf",
+         density_scale = klrb1_scale, color = "#414042",
+         legend_label = "KLRB1+ cells per 1% of UMAP area")
+
+# Per-cell point UMAPs: Supp Fig 1 Panel M
+plotUMAP(W0_joint, colorby = GEX,
+         "W0 joint KLRB1: TenX (bamsort)",
+         supp.dir,
+         "PanelM_UMAP_KLRB1_GEX.pdf",
+         comparison = FALSE, color = "#414042", point_order = "foreground_last")
+plotUMAP(W0_joint, colorby = CaRe,
+         "W0 joint KLRB1: CaRe (bamsort)",
+         supp.dir,
+         "PanelM_UMAP_KLRB1_CaRe_minreads5.pdf",
+         comparison = FALSE, color = "#414042", point_order = "foreground_last")
+
+
+# Correlation
+p <- plot_jitter_marginal(W0_joint, paste0("W0 KLRB1 Correlation"))
+ggsave(paste0(output.dir, "PanelC_jitter_KLRB1.pdf"),
+       plot = p)
+cat("\n=== W0 KLRB1 ===\n")
+print_jitter_r2(p, "Panel C")
+```
+
+### Venn Diagram
+
+Prerequisites: the `### joint` chunk above.
+
+```{r}
+input_dir  <- paste0(data.root, "Figure1/joint/dataframes/")
+output.dir <- paste0(plot.root, "Figure1/")
+dir.create(output.dir, recursive = TRUE, showWarnings = FALSE)
+
+plot_venn <- function(tenx_only, care_only, both, title, outfile) {
+  tenx_total  <- tenx_only  + both
+  care_total <- care_only + both
+
+  # Circle radii proportional to sqrt of set size
+  scale <- 2
+  n_max <- max(tenx_total, care_total)
+  r1 <- scale * sqrt(tenx_total  / n_max)
+  r2 <- scale * sqrt(care_total / n_max)
+
+  area_per_cell <- pi * scale^2 / n_max
+  target_area   <- both * area_per_cell
+
+  if (both == 0) {
+    d <- r1 + r2 + 0.3
+  } else if (tenx_only == 0 && care_only == 0) {
+    d <- abs(r1 - r2)
+  } else {
+    int_area <- function(d) {
+      if (d >= r1 + r2)      return(0)
+      if (d <= abs(r1 - r2)) return(pi * min(r1, r2)^2)
+      a1 <- r1^2 * acos((d^2 + r1^2 - r2^2) / (2 * d * r1))
+      a2 <- r2^2 * acos((d^2 + r2^2 - r1^2) / (2 * d * r2))
+      tri <- 0.5 * sqrt((-d+r1+r2)*(d+r1-r2)*(d-r1+r2)*(d+r1+r2))
+      a1 + a2 - tri
+    }
+    f  <- function(d) int_area(d) - target_area
+    lo <- abs(r1 - r2) + 0.001
+    hi <- r1 + r2 - 0.001
+    if (sign(f(lo)) == sign(f(hi))) {
+      d <- (lo + hi) / 2
+      message("uniroot fallback for: ", title)
+    } else {
+      d <- uniroot(f, c(lo, hi), tol = 1e-10)$root
+    }
+  }
+
+  circles <- data.frame(x = c(-d/2, d/2), y = c(0, 0), r = c(r1, r2))
+
+  tenx_label_x  <- -(r1 + r2) / 2
+  care_label_x <-  (r1 + r2) / 2
+  labels <- data.frame(
+    x = c(tenx_label_x, 0, care_label_x),
+    y = c(0, 0, 0),
+    count = c(tenx_only, both, care_only)
+  )
+  cat_labels <- data.frame(
+    x = c(tenx_label_x, care_label_x),
+    y = c(max(r1, r2) + 0.3, max(r1, r2) + 0.3),
+    label = c("TenX", "CaRe")
+  )
+
+  p <- ggplot() +
+    geom_circle(data = circles, aes(x0 = x, y0 = y, r = r),
+                fill = NA, color = "black", linewidth = 0.8) +
+    geom_text(data = labels,     aes(x = x, y = y, label = count), size = 6) +
+    geom_text(data = cat_labels, aes(x = x, y = y, label = label), size = 6) +
+    ggtitle(title) +
+    coord_fixed() +
+    theme_void() +
+    theme(plot.title = element_text(hjust = 0.5, size = 14))
+
+  ggsave(outfile, p, width = 6, height = 5)
+  invisible(p)
+}
+
+both_df      <- read.csv(paste0(input_dir, "KLRB1_both.csv"))
+tenx_only_df  <- read.csv(paste0(input_dir, "KLRB1_onlySingleCell.csv"))
+care_only_df <- read.csv(paste0(input_dir, "KLRB1_onlyCaRe.csv"))
+
+cat(sprintf("KLRB1 Venn counts — GEX only: %d, both: %d, Ca*Re only: %d\n",
+            nrow(tenx_only_df), nrow(both_df), nrow(care_only_df)))
+
+outfile <- paste0(output.dir, "PanelB_venn_KLRB1.pdf")
+plot_venn(nrow(tenx_only_df), nrow(care_only_df), nrow(both_df), "KLRB1", outfile)
+```
+
+### Panel D
+
+Prerequisites: the `### TenX` and `### Ca*Re` chunks above, which write the
+per-UMI read count tables this reads.
+
+```{r}
+output.dir <- paste0(plot.root, "Figure1/")
+dir.create(output.dir, recursive = TRUE, showWarnings = FALSE)
+
+sample_config <- list(
+  list(name = "KLRB1_W0",
+       tenx_file  = paste0(data.root, "Figure1/singleCell/bamsort/reads/KLRB1/W0_UMI_read_counts_full.csv"),
+       care_file = paste0(data.root, "Figure1/CaRe/bamsort/reads/KLRB1/W0_UMI_read_counts_full.csv"),
+       tenx_min = 1, care_min = 5, ylabel = "KLRB1+ Cells")
+)
+
+subsample_and_filter <- function(raw_df, fraction, min_reads) {
+  raw_df %>%
+    mutate(sampled_reads = rbinom(n(), size = read_count, prob = fraction)) %>%
+    filter(sampled_reads >= min_reads) %>%
+    distinct(cellID) %>%
+    pull(cellID)
+}
+
+fractions    <- c(0.2, 0.4, 0.6, 0.8, 1.0)
+n_replicates <- 5
+set.seed(42)
+
+
+for (cfg in sample_config) {
+  if (!file.exists(cfg$tenx_file) | !file.exists(cfg$care_file)) {
+    cat("Skipping", cfg$name, "- missing file\n"); next
+  }
+
+  tenx_raw   <- read.csv(cfg$tenx_file)
+  care_raw <- read.csv(cfg$care_file)
+
+  sat_results <- data.frame(depth_pct = numeric(), method = character(),
+                            n_cells = integer(), stringsAsFactors = FALSE)
+
+  for (frac in fractions) {
+    for (rep in 1:n_replicates) {
+      tenx_cells   <- subsample_and_filter(tenx_raw,   frac, cfg$tenx_min)
+      care_cells <- subsample_and_filter(care_raw, frac, cfg$care_min)
+      sat_results <- rbind(sat_results,
+        data.frame(depth_pct = frac * 100, method = "TenX",   n_cells = length(tenx_cells)),
+        data.frame(depth_pct = frac * 100, method = "Ca*Re", n_cells = length(care_cells))
+      )
+    }
+  }
+
+  sat_summary <- sat_results %>%
+    group_by(depth_pct, method) %>%
+    summarise(mean_cells = mean(n_cells), sd_cells = sd(n_cells), .groups = "drop")
+
+    panel_d_plot <- ggplot(sat_summary,
+           aes(x = depth_pct, y = mean_cells, color = method, fill = method)) +
+      geom_ribbon(aes(ymin = mean_cells - sd_cells,
+                      ymax = mean_cells + sd_cells),
+                  alpha = 0.15, color = NA) +
+      geom_line(linewidth = 0.8) +
+      geom_point(size = 2.5) +
+      scale_x_continuous(breaks = seq(20, 100, 20),
+                         labels = paste0(seq(20, 100, 20), "%")) +
+      scale_y_continuous(expand = expansion(mult = c(0, 0.05)), limits = c(0, NA)) +
+      scale_color_manual(values = c("TenX" = "#2B3990", "Ca*Re" = "#00AEEF")) +
+      scale_fill_manual(values  = c("TenX" = "#2B3990", "Ca*Re" = "#00AEEF")) +
+      labs(x = "Sequencing Depth (% of total reads)",
+           y = cfg$ylabel,
+           color = NULL, fill = NULL) +
+      theme_classic() +
+      theme(legend.position = "bottom")
+
+    ggsave(paste0(output.dir, "PanelD_KLRB1_W0_saturation.pdf"),
+           panel_d_plot, width = 3.5, height = 4)
+}
+```
+
+
+# SIV
+
+## Extraction
+
+### Seurat objects
+
+Prerequisites: the per-sample cellranger `filtered_feature_bc_matrix`
+directories -- the same EGS002 / EGS004 / EGS009 `Mmul_10_mac239` counts the
+TenX bamsort arm reads, listed in
+`submissionScripts/Figure1/stepTwo_bamsort_TenX.csv`. The TenX cellranger runs
+are upstream input, not produced by this pipeline.
+
+Writes the two things every later chunk in this notebook reads: the per-sample
+Seurat object (`SeuratPipeline(rds = TRUE)` saves it under
+`Seurat/RDS/<sample>.rds`) and the UMAP coordinate table with each cell's library
+size (`Seurat/UMAPcoords/<sample>UMAP_coords.csv`). Run this before `### joint`.
+
+D83 is sequenced in EGS016 but is not one of the six Figure1 samples, so it is
+not built here.
+
+```{r}
+samples <- data.frame(
+  datasets = c(
+    "LP29_D0",
+    "LP29_D195",
+    "invitro",
+    "P_acute_combined",
+    "W0",
+    "W2"
+  ),
+  samples = c(
+    "D0",
+    "D195",
+    "Invitro",
+    "Pacute",
+    "W0",
+    "W2"
+  ),
+  folders = paste0(data.root, c(
+    "Figure1/singleCell/counts/Mmul_10_mac239/",
+    "Figure1/singleCell/counts/Mmul_10_mac239/",
+    "Figure1/singleCell/counts/Mmul_10_mac239/",
+    "Figure1/singleCell/counts/Mmul_10_mac239/",
+    "Figure1/singleCell/counts/Mmul_10_mac239/",
+    "Figure1/singleCell/counts/Mmul_10_mac239/"
+  ))
+)
+
+seurat.dir <- paste0(data.root, "Figure1/singleCell/Seurat/")
+output.dir <- paste0(seurat.dir, "UMAPcoords/")
+dir.create(output.dir, recursive = TRUE, showWarnings = FALSE)
+
+for (i in 1:nrow(samples)) {
+  sample_name <- samples$samples[i]
+  dataset <- samples$datasets[i]
+  folder <- samples$folders[i]
+  input.dir <- paste0(folder, "Mmul_10_mac239_", dataset, "/outs/filtered_feature_bc_matrix/")
+
+  tryCatch({
+    seurat_obj <- SeuratPipeline(input.dir, sample_name,
+                                 output_dir = seurat.dir,
+                                 plots = TRUE, rds = TRUE)
+
+    # Cell-level coordinates and clusters, no gene expression columns
+    umap_coords <- Embeddings(seurat_obj, reduction = "umap")
+    sample_df <- data.frame(cellID = colnames(seurat_obj), stringsAsFactors = FALSE)
+    sample_df$UMAP1   <- umap_coords[, 1]
+    sample_df$UMAP2   <- umap_coords[, 2]
+    sample_df$cluster <- Idents(seurat_obj)
+
+    sample_df$size <- colSums(GetAssayData(seurat_obj, assay = "RNA", layer = "counts"))
+    sample_df$sample <- sample_name
+
+    write.csv(sample_df, paste0(output.dir, sample_name, "UMAP_coords.csv"))
+
+    cat("Processed sample:", sample_name, "\n")
+  }, error = function(e) {
+    cat("Error processing sample", sample_name, ":", conditionMessage(e), "\n\n")
+  })
+}
+```
+
+### joint
+
+Prerequisites: the `### Seurat objects` chunk above for the per-sample UMAP
+coordinate tables, and the `stepFour` minimum tables for both assays.
+
+```{r}
+# Loading
+samples <-  c(
+    "D0",
+    "D195",
+    "Invitro",
+    "Pacute",
+    "W0",
+    "W2"
+)
+
+dir.base <- data.root
+
+# The Figure1 Ca*Re pipeline writes one tree per condition group, so the
+# per-sample tables are addressed through the group a sample belongs to.
+care.group <- c(D0 = "uninfected", W0 = "uninfected", D195 = "ART",
+                Invitro = "invitro", Pacute = "viremia", W2 = "viremia")
+
+joint_data <- list()
+
+for (i in 1:length(samples)) {
+  sample_name <- samples[i]
+
+  # Read all data files
+  care_file <- paste0(dir.base, "Figure1/CaRe/", care.group[[sample_name]],
+                       "/bamsort/reads/minimum/",
+                       sample_name, "_CaRe_filtered.csv")
+  tenx_file <- paste0(dir.base, "Figure1/singleCell/bamsort/reads/minimum/",
+                     sample_name, "_GEX_filtered.csv")
+  umap_file <- paste0(dir.base, "Figure1/singleCell/Seurat/UMAPcoords/", 
+                      sample_name, "UMAP_coords.csv")
+  care_data <- if(file.exists(care_file)) read.csv(care_file) else NULL
+  tenx_data <- if(file.exists(tenx_file)) read.csv(tenx_file) else NULL
+  umap_data <- if(file.exists(umap_file)) read.csv(umap_file, row.names = "X") else NULL
+  
+  # Skip if no data at all
+  if (is.null(care_data) && is.null(tenx_data) && is.null(umap_data)) {
+    cat("Skipping", sample_name, ": no data\n")
+    next
+  }
+  
+  # Create base dataframe
+  all_cells <- as.character(umap_data$cellID)
+  all_cells <- unique(all_cells)
+  result <- data.frame(cellID = all_cells)
+  
+  # Add UMAP data
+  if (!is.null(umap_data)) {
+    umap_processed <- umap_data %>%
+      select(-any_of("V2"), -sample)
+    result <- left_join(result, umap_processed, by = "cellID")
+  }
+  
+  # Add TenX data
+  if (!is.null(tenx_data)) {
+    tenx_processed <- tenx_data %>%
+      mutate(cellID = as.character(cellID)) %>%
+      select(cellID, total, US)
+    result <- left_join(result, tenx_processed, by = "cellID") %>%
+      mutate(GEX = log1p(total)) %>%
+      mutate(GEX.US = log1p(US)) %>%
+      select(-total, -US)
+  } else {
+    result$GEX <- 0
+  }
+  
+  # Add CaRe data
+  if (!is.null(care_data)) {
+    care_processed <- care_data %>%
+      rename(CaRe = total) %>%
+      mutate(cellID = as.character(cellID)) %>%
+      select(cellID, CaRe, US, SS, MS)
+    result <- left_join(result, care_processed, by = "cellID") %>%
+      mutate(CaRe = log1p(CaRe)) %>%
+      mutate(USprop = US / (US+MS+SS)) %>%
+      mutate(SSprop = SS / (US+MS+SS)) %>%
+      mutate(MSprop = MS / (US+MS+SS)) %>%
+      mutate(US = log1p(US)) %>%
+      mutate(SS = log1p(SS)) %>%
+      mutate(MS = log1p(MS))
+  } else {
+    result$CaRe <- 0
+  }
+  
+  result[is.na(result)] <- 0
+  
+  # Cell type filtering
+  result <- apply_cd4t_gate(result, sample_name,
+                            c("GEX", "GEX.US", "CaRe", "US", "MS", "SS"))
+  
+  joint_data[[sample_name]] <- result
+  cat("Processed", sample_name, "\n")
+}
+
+# Saving
+output_dir <- paste0(data.root, "Figure1/joint/dataframes/")
+dir.create(output_dir, recursive = TRUE, showWarnings = FALSE)
+
+
+for (sample_name in names(joint_data)) {
+  current_df <- joint_data[[sample_name]]
+  
+  both <- current_df %>% filter(GEX != 0 & CaRe != 0)
+  either <- current_df %>% filter(GEX != 0 | CaRe != 0)
+  onlySingleCell <- current_df %>% 
+    filter(GEX != 0) %>%
+    filter(!(cellID %in% both$cellID))
+  onlyCaRe <- current_df %>% 
+    filter(CaRe != 0) %>%
+    filter(!(cellID %in% both$cellID))
+
+  write.csv(both, paste0(output_dir, sample_name, "_both.csv"), row.names = FALSE)
+  write.csv(onlySingleCell, paste0(output_dir, sample_name, "_onlySingleCell.csv"), row.names = FALSE)
+  write.csv(onlyCaRe, paste0(output_dir, sample_name, "_onlyCaRe.csv"), row.names = FALSE)
+  write.csv(current_df, paste0(output_dir, sample_name, "_all.csv"), row.names = FALSE)
+}
+```
+
+### Sample integration
+
+Prerequisites: the per-sample Seurat RDS in `Figure1/singleCell/Seurat/RDS/`, the
+`stepFour` minimum tables under `Figure1/CaRe/<group>/` and
+`Figure1/singleCell/`, and the `stepFive` marker tables in
+`Figure1/singleCell/Seurat/expressionDF/`.
+
+Each condition with more than one sample is integrated into a single object:
+SCTransform → PCA → Harmony → UMAP/clusters, then join TenX and Ca*Re as before
+
+```{r}
+rds.dir        <- paste0(data.root, "Figure1/singleCell/Seurat/RDS/")
+integrated.dir <- paste0(data.root, "Figure1/joint/integrated/")
+dir.create(integrated.dir, recursive = TRUE, showWarnings = FALSE)
+
+# One entry per multi-sample condition. `care.group` names the Figure1 Ca*Re
+# tree the group's per-sample tables are written under; every sample in a group
+# shares it.
+integration_groups <- list(
+  Pacute_W2 = list(samples = c("Pacute", "W2"), care.group = "viremia"),
+  D0_W0     = list(samples = c("D0", "W0"),     care.group = "uninfected")
+)
+
+output.dir <- paste0(plot.root, "Supplemental/SuppFig1/")
+dir.create(output.dir, recursive = TRUE, showWarnings = FALSE)
+
+for (group_name in names(integration_groups)) {
+  integrated.rds <- paste0(integrated.dir, group_name, "_integrated.rds")
+  group_samples  <- integration_groups[[group_name]]$samples
+
+  if (!file.exists(integrated.rds)) {
+    individual <- list()
+    for (sample_name in group_samples) {
+      obj <- readRDS(paste0(rds.dir, sample_name, ".rds"))
+      obj$orig.ident <- sample_name
+      obj <- RenameCells(obj, add.cell.id = sample_name)
+      individual[[sample_name]] <- obj
+    }
+
+    obj <- Reduce(function(x, y) merge(x, y), individual)
+    obj <- SCTransform(obj, vst.flavor = "v2", verbose = FALSE)
+    obj <- RunPCA(obj, verbose = FALSE)
+    obj <- IntegrateLayers(obj, method = HarmonyIntegration,
+                           orig.reduction = "pca",
+                           new.reduction  = "harmony",
+                           normalization.method = "SCT",
+                           verbose = FALSE)
+    obj <- FindNeighbors(obj, reduction = "harmony", dims = 1:REDUCTION_DIMENSIONS)
+    obj <- FindClusters(obj, resolution = 0.7, algorithm = 4)
+    obj <- RunUMAP(obj, dims = 1:REDUCTION_DIMENSIONS, reduction = "harmony")
+
+    saveRDS(obj, file = integrated.rds)
+    rm(individual)
+    gc()
+  } else {
+    obj <- readRDS(integrated.rds)
+  }
+
+  dplot_sample <- DimPlot(obj, reduction = "umap", group.by = "orig.ident")
+  ggsave(paste0(output.dir, "UMAP_", group_name, "_orig.ident.pdf"), dplot_sample,
+         width = 6, height = 5)
+
+  dplot_clust <- DimPlot(obj, reduction = "umap", label = TRUE)
+  ggsave(paste0(output.dir, "UMAP_", group_name, "_clusters.pdf"), dplot_clust,
+         width = 6, height = 5)
+
+  cat("Integrated", group_name, ":", ncol(obj), "cells\n")
+
+  # One integrated object at a time: each is several GB in memory
+  rm(obj)
+  gc()
+}
+```
+
+Prerequisites: the integration chunk above, which writes
+`<group>_integrated.rds`.
+
+```{r}
+# Build one joint dataframe per integrated group
+
+dir.base   <- data.root
+output_dir <- paste0(data.root, "Figure1/joint/dataframes/")
+dir.create(output_dir, recursive = TRUE, showWarnings = FALSE)
+
+# W0 has no viral reads so has no stepFour table
+build_sample_block <- function(sample_name, care_group) {
+  care_file <- paste0(dir.base, "Figure1/CaRe/", care_group,
+                       "/bamsort/reads/minimum/",
+                       sample_name, "_CaRe_filtered.csv")
+  tenx_file   <- paste0(dir.base, "Figure1/singleCell/bamsort/reads/minimum/",
+                       sample_name, "_GEX_filtered.csv")
+  prefix_cell <- function(x) paste0(sample_name, "_", as.character(x))
+
+  list(
+    care = if (file.exists(care_file)) read.csv(care_file) %>% mutate(cellID = prefix_cell(cellID)),
+    tenx   = if (file.exists(tenx_file))   read.csv(tenx_file)   %>% mutate(cellID = prefix_cell(cellID))
+  )
+}
+
+for (group_name in names(integration_groups)) {
+  group_samples <- integration_groups[[group_name]]$samples
+  care_group    <- integration_groups[[group_name]]$care.group
+  obj           <- readRDS(paste0(integrated.dir, group_name, "_integrated.rds"))
+
+  umap_emb <- Embeddings(obj, reduction = "umap")
+  colnames(umap_emb) <- c("UMAP1", "UMAP2")
+  umap_int <- umap_emb %>%
+    as.data.frame() %>%
+    tibble::rownames_to_column("cellID")
+  umap_int$cluster <- as.character(Idents(obj)[umap_int$cellID])
+  umap_int$size    <- as.numeric(obj$nCount_RNA[umap_int$cellID])
+
+  blocks    <- lapply(group_samples, build_sample_block, care_group = care_group)
+  care_all <- bind_rows(lapply(blocks, `[[`, "care"))
+  tenx_all   <- bind_rows(lapply(blocks, `[[`, "tenx"))
+
+  result <- umap_int
+
+  if (nrow(tenx_all) > 0) {
+    tenx_processed <- tenx_all %>%
+      mutate(cellID = as.character(cellID)) %>%
+      select(cellID, total, US)
+    result <- left_join(result, tenx_processed, by = "cellID") %>%
+      mutate(GEX    = log1p(total),
+             GEX.US = log1p(US)) %>%
+      select(-total, -US)
+  } else {
+    result$GEX    <- 0
+    result$GEX.US <- 0
+  }
+
+  if (nrow(care_all) > 0) {
+    care_processed <- care_all %>%
+      rename(CaRe = total) %>%
+      mutate(cellID = as.character(cellID)) %>%
+      select(cellID, CaRe, US, SS, MS)
+    result <- left_join(result, care_processed, by = "cellID") %>%
+      mutate(CaRe  = log1p(CaRe),
+             USprop = US / (US + MS + SS),
+             SSprop = SS / (US + MS + SS),
+             MSprop = MS / (US + MS + SS),
+             US     = log1p(US),
+             SS     = log1p(SS),
+             MS     = log1p(MS))
+  } else {
+    result$CaRe <- 0
+  }
+
+  result[is.na(result)] <- 0
+
+  result <- apply_cd4t_gate(result, group_samples,
+                            c("GEX", "GEX.US", "CaRe", "US", "MS", "SS"),
+                            prefix = TRUE)
+
+  both           <- result %>% filter(GEX != 0 & CaRe != 0)
+  onlySingleCell <- result %>% filter(GEX != 0) %>% filter(!(cellID %in% both$cellID))
+  onlyCaRe      <- result %>% filter(CaRe != 0) %>% filter(!(cellID %in% both$cellID))
+
+  write.csv(both,           paste0(output_dir, group_name, "_both.csv"),           row.names = FALSE)
+  write.csv(onlySingleCell, paste0(output_dir, group_name, "_onlySingleCell.csv"), row.names = FALSE)
+  write.csv(onlyCaRe,      paste0(output_dir, group_name, "_onlyCaRe.csv"),      row.names = FALSE)
+  write.csv(result,         paste0(output_dir, group_name, "_all.csv"),            row.names = FALSE)
+
+  cat("Wrote", group_name, "joint dataframe:",
+      nrow(result), "cells,",
+      nrow(both), "both,",
+      nrow(onlySingleCell), "TenX-only,",
+      nrow(onlyCaRe), "CaRe-only\n")
+
+  rm(obj)
+  gc()
+}
+```
+
+
+## Plotting
+
+Prerequisites: the SIV `### joint` and integration chunks above, which write the
+per-sample and per-group joint dataframes.
+
+```{r}
+output.dir <- paste0(plot.root, "Figure1/")
+dir.create(output.dir, recursive = TRUE, showWarnings = FALSE)
+
+samples <-  c(
+    "D0",
+    "D0_W0",
+    "D195",
+    "Invitro",
+    "Pacute",
+    "W0",
+    "W2",
+    "Pacute_W2"
+)
+input_dir <- paste0(data.root, "Figure1/joint/dataframes/")
+joint_data <- list()
+
+for (sample_name in samples) {
+  current_df <- read.csv(paste0(input_dir, sample_name, "_all.csv"))
+  joint_data[[sample_name]] <- current_df
+}
+
+# Map sample names to Figure 1 panels
+umap_panel   <- c(D0_W0 = "PanelE", Invitro = "PanelF", Pacute_W2 = "PanelH", D195 = "PanelJ")
+jitter_panel <- c(Invitro = "PanelG", Pacute_W2 = "PanelI", D195 = "PanelK")
+
+# Process each dataset in the joint_data list
+for (sample_name in names(joint_data)) {
+  current_df <- joint_data[[sample_name]]
+  total_cells <- nrow(current_df)
+  both          <- current_df %>% filter(GEX != 0 & CaRe != 0)
+  n_tenx_cells   <- sum(current_df$GEX   > 0)
+  n_care_cells <- sum(current_df$CaRe > 0)
+  # Per-sample between methods stats for the in-text statement
+  # What share of the TenX viral molecules sit in Ca*Re+ cells
+  tenx_total          <- sum(expm1(current_df$GEX))
+  tenx_in_care_cells  <- sum(expm1(both$GEX))
+  pct_umi <- if (tenx_total > 0) tenx_in_care_cells / tenx_total * 100 else NA_real_
+  fold_cells <- if (n_tenx_cells > 0) n_care_cells / n_tenx_cells else NA_real_
+
+  cat(sprintf("\n=== %s ===\n", sample_name))
+  cat(sprintf("  Cells total:             %g\n", total_cells))
+  cat(sprintf("  TenX UMI total:             %g\n", tenx_total))
+  cat(sprintf("  TenX UMI in Ca*Re+ cells:   %g (%s of TenX UMIs)\n",
+              tenx_in_care_cells,
+              if (is.na(pct_umi)) "n/a" else sprintf("%.1f%%", pct_umi)))
+  cat(sprintf("  TenX-positive cells:        %d\n", n_tenx_cells))
+  cat(sprintf("  Ca*Re-positive cells:      %d\n", n_care_cells))
+  cat(sprintf("  Ca*Re cells / TenX cells:   %s\n",
+              if (is.na(fold_cells)) "n/a (no TenX+ cells)"
+              else sprintf("%.1fx", fold_cells)))
+
+  up <- if (sample_name %in% names(umap_panel))   paste0(umap_panel[[sample_name]],   "_") else ""
+  jp <- if (sample_name %in% names(jitter_panel)) paste0(jitter_panel[[sample_name]], "_") else ""
+
+  p <- plot_jitter_marginal(current_df, paste0(sample_name, " SIV Correlation"))
+  ggsave(paste0(output.dir, jp, "jitter_", sample_name, ".pdf"), plot = p)
+  # Samples outside jitter_panel still get a jitter plot, so they are labelled
+  # by sample rather than by a panel letter they do not have.
+  print_jitter_r2(p, if (nzchar(jp)) sub("_$", "", jp) else sample_name)
+
+
+  # Density UMAPs for main
+  siv_scale <- umapDensityScale(current_df, c("GEX", "CaRe"))
+  plotDensityUMAP(current_df, colorby = GEX,
+         paste0(sample_name, " joint SIV: TenX"),
+         output.dir,
+         paste0(up, "UMAPdensity_", sample_name, "_GEX.pdf"),
+         density_scale = siv_scale, color = "red",
+         legend_label = "SIV+ cells per 1% of UMAP area")
+  plotDensityUMAP(current_df, colorby = CaRe,
+         paste0(sample_name, " joint SIV: CaRe"),
+         output.dir,
+         paste0(up, "UMAPdensity_", sample_name, "_CaRe.pdf"),
+         density_scale = siv_scale, color = "red",
+         legend_label = "SIV+ cells per 1% of UMAP area")
+}
+```
+
+
+### Venn Diagrams
+
+Prerequisites: the SIV `### joint` and integration chunks above.
+
+```{r}
+# --- File list ---
+root_dir <- paste0(data.root, "Figure1/joint/dataframes/")
+output.dir <- paste0(plot.root, "Figure1/")
+dir.create(output.dir, recursive = TRUE, showWarnings = FALSE)
+
+# Skipping the uninfected samples since there's nothing to show
+samples <- list(
+  "Invitro",
+  "Pacute",
+  "D195",
+  "W2",
+  "Pacute_W2"
+)
+
+# Venn panels share the UMAP panel letters: F=Invitro, H=Pacute_W2, J=D195.
+venn_panel <- c(Invitro = "PanelF", Pacute_W2 = "PanelH", D195 = "PanelJ")
+
+# --- Plotting function ---
+plot_venn <- function(tenx_only, care_only, both, title, outfile) {
+  tenx_total   <- tenx_only + both
+  care_total <- care_only + both
+
+  # Radii proportional
+  scale <- 2  # base scale factor
+  n_max <- max(tenx_total, care_total)
+  r1 <- scale * sqrt(tenx_total  / n_max)   # TenX (left)
+  r2 <- scale * sqrt(care_total / n_max)   # CaRe (right)
+  area_per_cell <- pi * scale^2 / n_max
+  target_area   <- both * area_per_cell
+
+  if (both == 0) {
+    d <- r1 + r2 + 0.3
+  } else if (tenx_only == 0 && care_only == 0) {
+    d <- abs(r1 - r2)
+  } else {
+    # Intersection area of two circles with radii r1, r2 and center distance d
+    int_area <- function(d) {
+      if (d >= r1 + r2) return(0)
+      if (d <= abs(r1 - r2)) return(pi * min(r1, r2)^2)
+      a1 <- r1^2 * acos((d^2 + r1^2 - r2^2) / (2 * d * r1))
+      a2 <- r2^2 * acos((d^2 + r2^2 - r1^2) / (2 * d * r2))
+      tri <- 0.5 * sqrt((-d+r1+r2)*(d+r1-r2)*(d-r1+r2)*(d+r1+r2))
+      a1 + a2 - tri
+    }
+
+    f <- function(d) int_area(d) - target_area
+
+    lo <- abs(r1 - r2) + 0.001
+    hi <- r1 + r2 - 0.001
+
+    if (sign(f(lo)) == sign(f(hi))) {
+      d <- (lo + hi) / 2
+      message("uniroot fallback for: ", title)
+    } else {
+      d <- uniroot(f, c(lo, hi), tol = 1e-10)$root
+    }
+  }
+
+  circles <- data.frame(x = c(-d/2, d/2), y = c(0, 0), r = c(r1, r2))
+
+  # Label positions
+  tenx_label_x  <- -(r1 + r2) / 2
+  care_label_x <-  (r1 + r2) / 2
+
+  labels <- data.frame(
+    x = c(tenx_label_x, 0, care_label_x),
+    y = c(0, 0, 0),
+    count = c(tenx_only, both, care_only)
+  )
+
+  cat_labels <- data.frame(
+    x = c(tenx_label_x, care_label_x),
+    y = c(max(r1, r2) + 0.3, max(r1, r2) + 0.3),
+    label = c("TenX", "CaRe")
+  )
+
+  p <- ggplot() +
+    geom_circle(data = circles, aes(x0 = x, y0 = y, r = r),
+                fill = NA, color = "black", linewidth = 0.8) +
+    geom_text(data = labels, aes(x = x, y = y, label = count), size = 6) +
+    geom_text(data = cat_labels, aes(x = x, y = y, label = label), size = 6) +
+    ggtitle(title) +
+    coord_fixed() +
+    theme_void() +
+    theme(plot.title = element_text(hjust = 0.5, size = 14))
+
+  ggsave(outfile, p, width = 6, height = 5)
+}
+
+# --- Loop through files ---
+for (sample_name in samples) {
+  both <- read.csv(paste0(root_dir, sample_name, "_both.csv"))
+  tenx_only <- read.csv(paste0(root_dir, sample_name, "_onlySingleCell.csv"))
+  care_only <- read.csv(paste0(root_dir, sample_name, "_onlyCaRe.csv"))
+
+  vp <- if (sample_name %in% names(venn_panel)) paste0(venn_panel[[sample_name]], "_") else ""
+  outfile <- paste0(output.dir, vp, "venn_", sample_name, ".pdf")
+
+  plot_venn(nrow(tenx_only), nrow(care_only), nrow(both), sample_name, outfile)
+}
+```
+
+
+### Print: D195 (ART) expected overlap
+
+Prerequisites: the joint dataframes written by the SIV Extraction chunk above,
+and stepFive_markers.R for the CD4 T gate.
+
+```{r}
+root_dir     <- paste0(data.root, "Figure1/joint/dataframes/")
+n_depth_bins <- 20    # equal-count library-size strata, matching Supp Fig 1 Panel I
+
+# Null pool is the CD4 T gate
+all_cells <- read.csv(paste0(root_dir, "D195_all.csv"))
+gate      <- cd4t_gate_table("D195")
+pool      <- all_cells %>% filter(cellID %in% gate$cellID[gate$cd4t])
+both      <- read.csv(paste0(root_dir, "D195_both.csv"))$cellID
+care_set  <- union(both, read.csv(paste0(root_dir, "D195_onlyCaRe.csv"))$cellID)
+tenx_set  <- union(both, read.csv(paste0(root_dir, "D195_onlySingleCell.csv"))$cellID)
+
+# Overlap of two independent draws is hypergeometric. Under the library-size-matched
+# null, each assay's calls are randomly assigned a library-size bin
+pool$depth_bin <- ceiling(rank(pool$size, ties.method = "first") / nrow(pool) * n_depth_bins)
+per_bin <- pool %>%
+  group_by(depth_bin) %>%
+  summarise(n_cells = n(),
+            n_care  = sum(cellID %in% care_set),
+            n_tenx  = sum(cellID %in% tenx_set), .groups = "drop") %>%
+  mutate(expected = n_care * n_tenx / n_cells,
+         p_zero   = dhyper(0, n_care, n_cells - n_care, n_tenx))
+
+n_pool <- nrow(pool)
+n_care <- sum(pool$cellID %in% care_set)
+n_tenx <- sum(pool$cellID %in% tenx_set)
+cat(sprintf(paste0("D195 (ART), %d CD4 T cells: Ca*Re SIV+ %d, 10X SIV+ %d, shared %d\n",
+                   "  Uniform null:                expected overlap %.3f cells, P(no overlap) = %.3f\n",
+                   "  Library-size-matched null:   expected overlap %.3f cells, P(no overlap) = %.3f\n"),
+            n_pool, n_care, n_tenx, length(intersect(care_set, tenx_set)),
+            n_care * n_tenx / n_pool, dhyper(0, n_care, n_pool - n_care, n_tenx),
+            sum(per_bin$expected), prod(per_bin$p_zero)))
+```
+
+### Print: 10X viral vs host UMIs
+
+Prerequisites: the SIV `### joint` chunk above, and the cellranger counts under
+`Figure1/singleCell/counts/`.
+
+How much of each 10X gene-expression library is virus rather than host, in UMIs.
+Two cell sets are reported because the figure's own tables are filtered further
+than cellranger's: the cellranger called cells, read from
+`Figure1/singleCell/counts/outs_<sample>/filtered_feature_bc_matrix.h5`, and
+the Seurat-filtered cells the rest of Figure 1 uses, from
+`Figure1/joint/dataframes/<sample>_all.csv` (`size` is `nCount_RNA`, so it
+counts the viral feature too). A sample missing either file still gets the
+other. The viral UMI count the Ca*Re comparisons use for the 10X assay comes
+from a different caller, stepThree_process's
+`Figure1/singleCell/bamsort/reads/<sample>_UMI_read_counts_full.csv`, and is
+printed alongside.
+
+```{r tenx_viral_umi_fraction}
+load_packages("genomics")   # rhdf5, for the cellranger matrix
+
+counts.dir <- paste0(data.root, "Figure1/singleCell/counts/")
+reads.dir  <- paste0(data.root, "Figure1/singleCell/bamsort/reads/")
+joint.dir  <- paste0(data.root, "Figure1/joint/dataframes/")
+
+# Each sample is counted against one combined cellranger reference
+# (Mmul_10 + SIVmac239), where the whole viral genome is a single feature whose
+# id is the viral contig. Matched on the exact id: the host gene SIVA1 is in
+# this annotation and a substring match on "SIV" would pick it up as viral.
+tenx_umi_samples <- c("D0", "W0", "Invitro", "Pacute", "W2", "D195")
+viral_feature_id <- "mac239"
+
+tenx_umis <- purrr::map_dfr(tenx_umi_samples, function(sample_name) {
+  h5 <- paste0(counts.dir, "outs_", sample_name, "/filtered_feature_bc_matrix.h5")
+  if (!file.exists(h5)) {
+    cat(sprintf("Skipping %s - no filtered matrix at %s\n", sample_name, h5))
+    return(NULL)
+  }
+  # The matrix is read as its CSC parts rather than assembled: `indices` holds
+  # the 0-based feature row of every stored count, so one subset gives the viral
+  # row's UMIs and the full sum gives the library, without a dense matrix.
+  features <- rhdf5::h5read(h5, "matrix/features")
+  viral_row <- which(features$id == viral_feature_id)
+  stopifnot(length(viral_row) == 1)
+  umi_counts  <- as.numeric(rhdf5::h5read(h5, "matrix/data"))
+  umi_feature <- as.integer(rhdf5::h5read(h5, "matrix/indices"))
+  cr_viral <- sum(umi_counts[umi_feature == viral_row - 1L])
+  cr_total <- sum(umi_counts)
+
+  # The same two quantities over the Seurat-filtered cells, which are the cells
+  # every other Figure 1 number is computed on. GEX is log1p viral UMIs.
+  joint_file <- paste0(joint.dir, sample_name, "_all.csv")
+  seurat <- if (file.exists(joint_file)) {
+    j <- read.csv(joint_file)
+    list(cells = nrow(j), viral = sum(expm1(j$GEX)),
+         total = sum(as.numeric(j$size)))
+  } else list(cells = NA_integer_, viral = NA_real_, total = NA_real_)
+
+  # Viral UMIs by the bamsort caller: one row per cellID + UMI + category, so
+  # distinct cellID + UMI pairs are the molecules.
+  reads_file <- paste0(reads.dir, sample_name, "_UMI_read_counts_full.csv")
+  bamsort_viral <- if (file.exists(reads_file))
+    nrow(dplyr::distinct(read.csv(reads_file), cellID, UMI)) else NA_real_
+
+  tibble(sample = sample_name,
+         cr_cells = length(rhdf5::h5read(h5, "matrix/barcodes")),
+         cr_viral = cr_viral, cr_host = cr_total - cr_viral, cr_total = cr_total,
+         seurat_cells = seurat$cells, seurat_viral = seurat$viral,
+         seurat_host  = seurat$total - seurat$viral, seurat_total = seurat$total,
+         bamsort_viral = bamsort_viral)
+}) %>%
+  mutate(cr_pct_viral     = cr_viral / cr_total * 100,
+         seurat_pct_viral = seurat_viral / seurat_total * 100)
+
+commas <- function(x) format(round(x), big.mark = ",", scientific = FALSE)
+umi_line <- function(label, cells, viral, host, total, pct) {
+  if (is.na(total)) return(sprintf("  %-8s %s\n", label, "no table"))
+  sprintf("  %-8s cells %6s  viral %8s  host %13s  total %13s  viral = %.6f%%%s\n",
+          label, commas(cells), commas(viral), commas(host), commas(total), pct,
+          if (viral > 0) sprintf(" (1 in %s UMIs)", commas(total / viral)) else "")
+}
+
+cat("\n=== 10X UMIs, viral vs host (cellranger called cells) ===\n")
+for (i in seq_len(nrow(tenx_umis))) {
+  r <- tenx_umis[i, ]
+  cat(umi_line(r$sample, r$cr_cells, r$cr_viral, r$cr_host, r$cr_total, r$cr_pct_viral))
+}
+pooled <- tenx_umis %>% summarise(cells = sum(cr_cells), viral = sum(cr_viral),
+                                  host = sum(cr_host), total = sum(cr_total)) %>%
+  mutate(pct = viral / total * 100)
+cat(umi_line("pooled", pooled$cells, pooled$viral, pooled$host, pooled$total, pooled$pct))
+
+cat("\n=== 10X UMIs, viral vs host (Seurat-filtered cells, as used elsewhere in Figure 1) ===\n")
+for (i in seq_len(nrow(tenx_umis))) {
+  r <- tenx_umis[i, ]
+  cat(umi_line(r$sample, r$seurat_cells, r$seurat_viral, r$seurat_host,
+               r$seurat_total, r$seurat_pct_viral))
+}
+
+cat("\n  Viral UMIs by caller, cellranger feature vs bamsort contig:\n")
+for (i in seq_len(nrow(tenx_umis))) {
+  r <- tenx_umis[i, ]
+  cat(sprintf("    %-8s cellranger %8s | bamsort %s\n", r$sample,
+              commas(r$cr_viral),
+              if (is.na(r$bamsort_viral)) "no stepThree table"
+              else commas(r$bamsort_viral)))
+}
+```

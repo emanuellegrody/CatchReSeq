@@ -1,0 +1,1288 @@
+---
+title: "Figure2"
+author: "Emanuelle Grody"
+output: html_document
+---
+
+All three sourced files sit in this directory, so the paths below are relative:
+knitr runs each chunk with the working directory set to the .Rmd's own location.
+`config.R` has to come between the other two -- it defines `data.root`,
+`plot.root` and `genome.root`, which `functions.R` uses in its default arguments
+and which every path in this notebook is built from.
+
+```{r, message=FALSE, warning=FALSE}
+source("packages.R")
+source("config.R")
+source("functions.R")
+```
+
+
+# Panels C, I: donor-acceptor splice maps
+
+In vitro donor->acceptor splice maps
+Prerequisite: bamsort_splice; for Ca*Re, `submissionScripts/Figure1/` stepTwo,
+which writes the per-group splice tables.
+
+```{r}
+care.splice.dir <- function(group) {
+  paste0(data.root, "Figure1/CaRe/", group, "/bamsort/splice/")
+}
+
+suppfig3.dir <- paste0(plot.root, "Supplemental/SuppFig3/")
+dir.create(suppfig3.dir, recursive = TRUE, showWarnings = FALSE)
+
+sample_configs <- list(
+  list(
+    name = "Invitro_CaRe",
+    panel = "PanelI",
+    files = c("Invitro_D1_PL", "Invitro_env_PL", "Invitro_pol_PL", "Invitro_SSenv_PL",
+              "Invitro_tat"),
+    input_dir = care.splice.dir("invitro"),
+    umi_type = "CaRe",
+    umi_group = "invitro",
+    umi_sample_name = "Invitro"
+  ),
+  list(
+    name = "Invitro_GEX",
+    panel = "PanelC",
+    files = c("invitro"),
+    input_dir = paste0(data.root, "Figure1/singleCell/bamsort/splice/"),
+    umi_type = "TenX",
+    umi_sample_name = "Invitro"
+  ),
+  list(
+    name = "D195_CaRe",
+    out_dir = suppfig3.dir,
+    files = c("D195_D1_PL", "D195_env_PL", "D195_pol_PL", "D195_SSenv_PL",
+              "D195_tat"),
+    input_dir = care.splice.dir("ART"),
+    umi_type = "CaRe",
+    umi_group = "ART",
+    umi_sample_name = "D195"
+  ),
+  list(
+    name = "D195_GEX",
+    out_dir = suppfig3.dir,
+    files = c("D195"),
+    input_dir = paste0(data.root, "Figure1/singleCell/bamsort/splice/"),
+    umi_type = "TenX",
+    umi_sample_name = "D195"
+  )
+)
+
+care.reads.dir <- function(group) {
+  paste0(data.root, "Figure1/CaRe/", group, "/bamsort/reads/")
+}
+
+donor_ref    <- c(D1 = 431, D2 = 4730, D3 = 5217, D4 = 6043)
+acceptor_ref <- c(A1 = 4658, A2 = 5141, A3 = 5746, A4 = 5818, A5 = 5959, A7 = 8249)
+
+# Endpoints within JUNCTION_TOLERANCE bp are collapsed
+JUNCTION_TOLERANCE <- 10
+
+# Clusters are seeded from the best-supported position. A cluster landing within
+# tol of a canonical site takes that site's coordinate.
+snap_sites <- function(positions, weights, reference, tol) {
+  support <- tapply(weights, positions, sum)
+  pos     <- as.numeric(names(support))
+  sup     <- as.numeric(support)
+  rep_of  <- rep(NA_real_, length(pos))
+
+  for (i in order(sup, decreasing = TRUE)) {
+    if (!is.na(rep_of[i])) next
+    center <- pos[i]
+    near   <- reference[abs(reference - center) <= tol]
+    representative <- if (length(near) > 0) near[which.min(abs(near - center))] else center
+    rep_of[is.na(rep_of) & abs(pos - center) <= tol] <- representative
+  }
+  rep_of[match(positions, pos)]
+}
+TenX.dir <- paste0(data.root, "Figure1/singleCell/bamsort/reads/")
+output.dir <- paste0(plot.root, "Figure2/")
+dir.create(output.dir, recursive = TRUE, showWarnings = FALSE)
+
+
+map_quant <- data.frame()
+
+for (config in sample_configs) {
+  sample_name <- config$name
+  input_dir <- config$input_dir
+
+  cat("\nProcessing sample:", sample_name, "\n")
+
+  # Step 1: Combine data from all files in this sample
+  combined_data <- data.frame()
+  sample_molecules <- data.frame()
+
+  for (file in config$files) {
+    candidates <- paste0(input_dir, file, "_splicesites.csv")
+    csv_path <- candidates[file.exists(candidates)][1]
+    if (is.na(csv_path)) {
+      cat("    WARNING: no splicesites CSV found for", file, "- skipping\n")
+      next
+    }
+    data <- read.csv(csv_path)
+
+    if (nrow(data) == 0) {
+      cat("    no spliced reads in", file, "- skipping\n")
+      next
+    }
+
+    if (config$umi_type == "CaRe") {
+      umi_file <- paste0(care.reads.dir(config$umi_group), "minimum/valid_UMI/",
+                         config$umi_sample_name, "_valid_cellID_UMI.csv")
+      umi_data <- if(file.exists(umi_file)) read.csv(umi_file) else NULL
+    } else if (config$umi_type == "TenX") {
+      umi_file <- paste0(TenX.dir, "minimum/valid_UMI/", config$umi_sample_name, "_GEX_valid_cellID_UMI.csv")
+      umi_data <- if(file.exists(umi_file)) read.csv(umi_file) else NULL
+    } else {
+      stop("Invalid umi_type: must be 'CaRe' or 'TenX'")
+    }
+
+    # Rows are deduplicated molecules
+    if (is.null(umi_data)) {
+      cat("    WARNING: UMI file not found, skipping filtering\n")
+      kept <- data
+    } else {
+      # Match on the (cellID, UMI) pair
+      kept <- data %>%
+        mutate(CB = as.character(CB)) %>%
+        semi_join(umi_data %>%
+                    mutate(cellID = as.character(cellID)) %>%
+                    select(cellID, UMI),
+                  by = c("CB" = "cellID", "UB" = "UMI"))
+    }
+
+    file_data <- kept %>%
+      count(Donor, Acceptor) %>%
+      mutate(file = file)
+
+    combined_data <- rbind(combined_data, file_data)
+    sample_molecules <- rbind(sample_molecules,
+                              kept %>% distinct(CB, UB))
+  }
+
+  if (nrow(combined_data) == 0) {
+    cat("  No splice data for this sample - skipping\n")
+    next
+  }
+
+  # Step 2: collapse endpoints within JUNCTION_TOLERANCE, then sum counts across
+  # files
+  n_exact <- nrow(distinct(combined_data, Donor, Acceptor))
+  combined_data <- combined_data %>%
+    mutate(
+      Donor    = snap_sites(Donor,    n, donor_ref,    JUNCTION_TOLERANCE),
+      Acceptor = snap_sites(Acceptor, n, acceptor_ref, JUNCTION_TOLERANCE)
+    )
+
+  plotdata <- combined_data %>%
+    group_by(Donor, Acceptor) %>%
+    summarise(
+      raw_count = sum(n),
+      files = paste(unique(file), collapse = ", "),
+      .groups = 'drop'
+    ) %>%
+    arrange(Donor) %>%
+    mutate(
+      y_position = row_number(),
+      log_count = log1p(raw_count)
+    )
+
+  # events counts a molecule once per distinct junction it carries
+  n_molecules <- nrow(distinct(sample_molecules, CB, UB))
+  cat("  Combined junctions:", nrow(plotdata),
+      sprintf("(from %d exact coordinate pairs, tolerance %dbp)\n",
+              n_exact, JUNCTION_TOLERANCE))
+  cat("  Splice counts:", n_molecules, "\n")
+
+  map_quant <- rbind(map_quant, data.frame(
+    sample    = config$umi_sample_name,
+    method    = ifelse(config$umi_type == "CaRe", "Ca*Re", "TenX"),
+    junctions = nrow(plotdata),
+    events    = sum(plotdata$raw_count),
+    molecules = n_molecules
+  ))
+
+  # Splicing rate vs deduplicated TenX reads mapping to mac239 in Invitro
+  if (sample_name == "Invitro_CaRe" && exists("tenx_data") && !is.null(tenx_data)) {
+    invitro_tenx_mac239_total <- sum(tenx_data$total, na.rm = TRUE)
+    cat(sprintf("  Splicing events after QC: %d / %d deduplicated Invitro TenX mac239 reads (%.4f%%)\n",
+                nrow(plotdata), invitro_tenx_mac239_total,
+                100 * nrow(plotdata) / invitro_tenx_mac239_total))
+  }
+
+  if (nrow(plotdata) > 0) {
+  # Share color scale
+  MAX_LOG <- 9
+
+  plotdata <- plotdata %>%
+    arrange(Donor, Acceptor) %>%
+    mutate(y_position = row_number())
+  n_junctions <- nrow(plotdata)
+
+  RIBBON_HEIGHT <- 0.8
+  make_splice_map <- function(fill_var, fill_scale) {
+    ggplot(plotdata) +
+      geom_vline(xintercept = donor_ref,    color = "blue", linewidth = 0.4) +
+      geom_vline(xintercept = acceptor_ref, color = "red",  linewidth = 0.4) +
+      geom_hline(yintercept = 0, color = "black", linewidth = 1.5) +
+      geom_rect(aes(xmin = Donor, xmax = Acceptor,
+                    ymin = y_position - RIBBON_HEIGHT / 2,
+                    ymax = y_position + RIBBON_HEIGHT / 2,
+                    fill = .data[[fill_var]])) +
+      annotate("text", x = donor_ref,    y = -0.4, vjust = 1,
+               label = names(donor_ref),    color = "blue", size = 3) +
+      annotate("text", x = acceptor_ref, y = n_junctions + 0.8, vjust = 0,
+               label = names(acceptor_ref), color = "red",  size = 3) +
+      fill_scale +
+      scale_x_continuous(limits = c(0, 10279)) +
+      scale_y_continuous(expand = expansion(mult = c(0.1, 0.1))) +
+      labs(title = paste0("Splice Junctions: ", sample_name),
+           x = "Genomic Position", y = NULL) +
+      theme_minimal() +
+      theme(axis.text.y = element_blank(),
+            axis.ticks.y = element_blank(),
+            panel.grid = element_blank(),
+            legend.position = "right")
+  }
+
+  panel_prefix <- if (!is.null(config$panel)) paste0(config$panel, "_") else ""
+  config_out <- if (!is.null(config$out_dir)) config$out_dir else output.dir
+
+  p_log_viridis <- make_splice_map("log_count",
+    scale_fill_viridis_c(name = "log(Count+1)", limits = c(0, MAX_LOG),
+                         oob = scales::squish))
+  ggsave(paste0(config_out, panel_prefix, sample_name, "_combined_log.pdf"),
+         plot = p_log_viridis, width = 15, height = 8)
+
+  # p_linear_viridis <- make_splice_map("raw_count",
+  #   scale_fill_viridis_c(name = "Count", oob = scales::squish))
+  # ggsave(paste0(config_out, panel_prefix, sample_name, "_combined_linear.pdf"),
+  #        plot = p_linear_viridis, width = 15, height = 8)
+
+  } else {
+    cat("  No junctions found for this sample\n")
+  }
+}
+
+# Per-map quantification
+map_quant <- map_quant %>%
+  mutate(
+    sample = factor(sample, levels = c("Invitro", "D195")),
+    method = factor(method, levels = c("TenX", "Ca*Re"))
+  ) %>%
+  arrange(sample, method)
+cat("\nSplice-map quantification (per sample x method):\n"); print(map_quant)
+write.csv(map_quant, paste0(output.dir, "splice_map_quantification.csv"),
+          row.names = FALSE)
+```
+
+# Panel J: splice recovery rate (TenX vs Ca*Re)
+
+Splice recovery in vitro, normalized to each method's own viral molecule count.
+Prerequisite: the Panels C, I chunk above.
+
+```{r}
+tenx_viral_total  <- sum(read.csv(paste0(TenX.dir,
+                                        "minimum/Invitro_GEX_filtered.csv"))$total)
+care_viral_total <- sum(read.csv(paste0(care.reads.dir("invitro"),
+                                        "minimum/Invitro_CaRe_filtered.csv"))$total)
+
+splice_summary <- map_quant %>%
+  filter(sample == "Invitro") %>%
+  mutate(
+    viral_molecules = ifelse(method == "TenX", tenx_viral_total, care_viral_total),
+    rate_per_10k    = 10000 * molecules / viral_molecules
+  ) %>%
+  arrange(method)
+cat("Splice recovery summary (in vitro):\n"); print(splice_summary)
+
+if (nrow(splice_summary) < 2) {
+  stop("Panel J needs both the TenX and Ca*Re Invitro rows of map_quant")
+}
+
+rate_test <- prop.test(splice_summary$molecules, splice_summary$viral_molecules)
+p_rate    <- rate_test$p.value
+stars     <- if (p_rate < 0.001) "***" else if (p_rate < 0.01) "**" else
+             if (p_rate < 0.05)  "*"   else "ns"
+sig_label <- sprintf("%s (p = %s)", stars, format.pval(p_rate, digits = 2))
+cat(sprintf("Rate proportion test (TenX vs Ca*Re): chisq = %.1f, p = %s\n",
+            rate_test$statistic, format.pval(p_rate, digits = 3)))
+
+
+y_top <- max(splice_summary$rate_per_10k)
+p_recovery_rate <- ggplot(splice_summary,
+                          aes(x = method, y = rate_per_10k, fill = method)) +
+  geom_col(width = 0.7) +
+  geom_text(aes(label = sprintf("%.1f", rate_per_10k)), vjust = -0.3, size = 3) +
+  annotate("segment", x = 1, xend = 2, y = y_top * 1.6, yend = y_top * 1.6) +
+  annotate("segment", x = 1, xend = 1, y = y_top * 1.6, yend = y_top * 1.35) +
+  annotate("segment", x = 2, xend = 2, y = y_top * 1.6, yend = y_top * 1.35) +
+  annotate("text", x = 1.5, y = y_top * 1.9, label = sig_label, size = 3) +
+  scale_y_log10(expand = expansion(mult = c(0, 0.25))) +
+  scale_fill_manual(values = c("TenX" = "#2B3990", "Ca*Re" = "#00AEEF"),
+                    guide = "none") +
+  theme_classic() +
+  labs(x = "", y = "Spliced molecules / 10,000 viral molecules (log scale)",
+       title = "Splice recovery rate: TenX vs Ca*Re (in vitro)")
+ggsave(paste0(output.dir, "PanelJ_splice_recovery_rate.pdf"),
+       p_recovery_rate, width = 3.5, height = 4)
+print(p_recovery_rate)
+```
+
+
+# Panel D: long-read coverage silhouette
+
+Prerequisites: `samtools` on PATH and the long-read BAM
+
+```{r}
+output.dir   <- paste0(plot.root, "Figure2/")
+dir.create(output.dir, recursive = TRUE, showWarnings = FALSE)
+
+longread_bam <- paste0(data.root, "Figure2/longRead/nf-core/cDNA/bam/dedup/cDNA.dedup.sorted.bam")
+viral_contig <- "mac239"   # viral contig name in the Mmul_10+mac239 reference
+cov_csv      <- paste0(output.dir, "PanelD_longread_coverage.csv")
+
+
+if (file.exists(cov_csv)) {
+  cov <- read.csv(cov_csv)
+} else if (nzchar(Sys.which("samtools")) && file.exists(longread_bam)) {
+  tmp <- tempfile(fileext = ".txt")
+  status <- system2("samtools",
+                    c("depth", "-a", "-r", viral_contig, shQuote(longread_bam)),
+                    stdout = tmp)
+  cov <- read.table(tmp, sep = "\t", col.names = c("contig", "pos", "depth"))
+  unlink(tmp)
+  write.csv(cov, cov_csv, row.names = FALSE)
+} else {
+  cov <- NULL
+  message("Panel D coverage skipped: need either the cached CSV, or samtools ",
+          "on PATH plus the long-read BAM at\n  ", longread_bam)
+}
+
+if (!is.null(cov) && nrow(cov) > 0) {
+  coverage_plot <- ggplot(cov, aes(x = pos, y = depth)) +
+    geom_area(fill = "gray60", color = NA) +
+    scale_y_log10(limits = c(1, NA),
+                  breaks = c(1, 10, 100, 1000),
+                  expand = expansion(mult = c(0, 0.05))) +
+    scale_x_continuous(expand = expansion(0)) +
+    labs(x = "mac239 position (bp)", y = "Coverage") +
+    theme_classic(base_size = 10) +
+    theme(panel.grid = element_blank())
+
+  ggsave(paste0(output.dir, "PanelD_longread_coverage.pdf"),
+         coverage_plot, width = 12, height = 1.8)
+  print(coverage_plot)
+}
+```
+
+# In-text numbers : long-read
+
+Values quoted in the Results text for the short-read vs long-read comparison.
+
+Prerequisites: `submissionScripts/Figure2/bamsort_isoform_longread.sh`, and the
+cellranger `molecule_info.h5` for the in-vitro library at
+`Figure1/singleCell/counts/outs_Invitro/`, which the viral saturation is read
+from directly.
+
+```{r}
+output.dir <- paste0(plot.root, "Figure2/")
+dir.create(output.dir, recursive = TRUE, showWarnings = FALSE)
+
+# 10X viral-specific saturation, computed from the molecule_info.h5 per-molecule
+# read counts because metrics_summary.csv reports only whole-transcriptome
+# saturation.
+molecule_info_h5 <- paste0(data.root,
+  "Figure1/singleCell/counts/outs_Invitro/molecule_info.h5")
+tenx_saturation <- tenx_viral_saturation(molecule_info_h5, viral_feature = "mac239")
+for (i in seq_len(nrow(tenx_saturation))) {
+  row <- tenx_saturation[i, ]
+  cat(sprintf("10X [%s]: viral saturation = 1 - %d UMIs / %d reads = %.2f%%\n",
+              row$barcode_set, row$viral_umis, row$viral_reads,
+              100 * row$viral_saturation))
+  cat(sprintf("   estimated viral library complexity %.0f -> %.1f%% observed\n",
+              row$estimated_complexity, 100 * row$fraction_observed))
+}
+
+isoform_csv <- paste0(data.root, "Figure2/longRead/bamsort/isoform/cDNA_isoforms.csv")
+longread_molecules <- read.csv(isoform_csv)
+if (!"ref_start" %in% names(longread_molecules)) {
+  stop("`ref_start` column missing from ", isoform_csv, " -- re-run ",
+       "submissionScripts/Figure2/bamsort_isoform_longread.sh")
+}
+
+# Molecules starting at either targeted amplicon position are reported
+# separately from untargeted ones.
+AMPLICON_STARTS <- c(amplicon_gag = 1440, amplicon_envprimer = 8797)
+AMPLICON_TOLERANCE <- 6
+
+longread_molecules$group <- "untargeted"
+for (amplicon in names(AMPLICON_STARTS)) {
+  is_amplicon <- abs(longread_molecules$ref_start -
+                       AMPLICON_STARTS[[amplicon]]) <= AMPLICON_TOLERANCE
+  longread_molecules$group[is_amplicon] <- amplicon
+}
+
+for (group in c("untargeted", names(AMPLICON_STARTS))) {
+  molecules <- longread_molecules[longread_molecules$group == group, ]
+  n_molecules <- nrow(molecules)
+  if (n_molecules == 0) next
+  n_US <- sum(molecules$isoform == "US")
+  n_SS <- sum(molecules$isoform == "SS")
+  n_MS <- sum(molecules$isoform == "MS")
+  n_resolved <- n_US + n_SS + n_MS
+  cat(sprintf("\nlong-read [%s]: %d molecules\n", group, n_molecules))
+  cat(sprintf("   resolved to a single isoform: %d/%d = %.1f%%\n",
+              n_resolved, n_molecules, 100 * n_resolved / n_molecules))
+  if (n_resolved > 0) {
+    cat(sprintf("   of resolved, unspliced (US):  %d/%d = %.1f%%\n",
+                n_US, n_resolved, 100 * n_US / n_resolved))
+    cat(sprintf("   of resolved, spliced (SS+MS): %d/%d = %.1f%%\n",
+                n_SS + n_MS, n_resolved, 100 * (n_SS + n_MS) / n_resolved))
+  }
+  # Junction count per molecule: only a molecule spanning >= 2 junctions carries
+  # isoform information a short read spanning one junction could not report.
+  cat(sprintf(paste0("   junctions per molecule: 0 = %d (%.1f%%), ",
+                     "1 = %d (%.1f%%), >=2 = %d (%.1f%%)\n"),
+              sum(molecules$n_junctions == 0),
+              100 * mean(molecules$n_junctions == 0),
+              sum(molecules$n_junctions == 1),
+              100 * mean(molecules$n_junctions == 1),
+              sum(molecules$n_junctions >= 2),
+              100 * mean(molecules$n_junctions >= 2)))
+  cat(sprintf("   aligned viral bases: median %.0f, max %d\n",
+              median(molecules$aligned_bases),
+              max(molecules$aligned_bases)))
+}
+```
+
+# Panel G: polyA
+
+Prerequisites: `mac239.fa` and `d400_class_polya_structure_analysis.csv`
+
+## Extraction
+
+```{r}
+fasta_path  <- paste0(genome.root, "Mmul_10_mac239/inputs/mac239.fa")
+input_csv   <- paste0(data.root, "Figure2/polyA/bam_polya_virus/d400_class_polya_structure_analysis.csv")
+results_csv <- paste0(plot.root, "Figure2/polyA_explained.csv")
+seurat_umap_csv <- paste0(data.root, "Figure1/singleCell/Seurat/UMAPcoords/D13UMAP_coords.csv")
+dir.create(dirname(results_csv), recursive = TRUE, showWarnings = FALSE)
+
+# SIVmac239 terminal polyA cleavage sites in mac239.fa (length 9602).
+# Note the R region (containing the PAS) is duplicated between 5'LTR and 3'LTR
+# STAR multi-map handling may place terminal R1 reads at either LTR's R region
+terminal_sites <- c(141L, 9602L)
+min_lengths <- c(6L, 7L, 8L, 9L, 10L)
+max_nonAs   <- c(0L, 1L, 2L)
+min_dists_r2 <- c(400L, 500L, 600L)
+min_dists_r1 <- c(50L, 100L, 150L)
+
+# Maximal A-rich region detection: walk every A-start, extend while
+# mismatches <= max_nonA, keep the furthest A-end of length >= min_length.
+find_arich_regions <- function(sequence, min_length, max_nonA) {
+  bases <- strsplit(sequence, "", fixed = TRUE)[[1]]
+  is_a  <- bases == "A"
+  n     <- length(bases)
+  starts_idx <- which(is_a)
+  out <- vector("list", length(starts_idx))
+  k <- 0L
+  for (i in starts_idx) {
+    mismatches <- 0L
+    last_valid_end <- NA_integer_
+    j <- i
+    while (j <= n) {
+      if (!is_a[j]) {
+        mismatches <- mismatches + 1L
+        if (mismatches > max_nonA) break
+      }
+      if (is_a[j] && (j - i + 1L) >= min_length) {
+        last_valid_end <- j
+      }
+      j <- j + 1L
+    }
+    if (!is.na(last_valid_end)) {
+      mm_count <- sum(!is_a[i:last_valid_end])
+      k <- k + 1L
+      out[[k]] <- c(i, last_valid_end, last_valid_end - i + 1L, mm_count)
+    }
+  }
+  if (k == 0L) {
+    return(data.frame(start_position = integer(), end_position = integer(),
+                      length = integer(), mismatches = integer()))
+  }
+  m <- do.call(rbind, out[seq_len(k)])
+  data.frame(start_position = as.integer(m[, 1]),
+             end_position   = as.integer(m[, 2]),
+             length         = as.integer(m[, 3]),
+             mismatches     = as.integer(m[, 4]))
+}
+
+# Drop nested intervals (any whose end <= max end already kept).
+deduplicate_regions <- function(df) {
+  if (nrow(df) == 0L) return(df)
+  df <- df[order(df$start_position, -df$end_position, df$mismatches), ]
+  keep <- logical(nrow(df))
+  max_end <- -1L
+  for (k in seq_len(nrow(df))) {
+    if (df$end_position[k] <= max_end) next
+    keep[k] <- TRUE
+    max_end <- df$end_position[k]
+  }
+  df[keep, , drop = FALSE]
+}
+
+# Read2 classifier: priming site is DOWNSTREAM of read2_pos. Find closest
+# polyA start strictly > r2 and classify by distance
+classify_reads_r2 <- function(r2_positions, polyA_starts, min_dist, terminal_sites) {
+  all_starts <- sort(unique(c(as.integer(polyA_starts), as.integer(terminal_sites))))
+  terminal_set <- as.integer(terminal_sites)
+  idx <- findInterval(r2_positions, all_starts) + 1L
+  has_downstream <- idx <= length(all_starts)
+  closest_start  <- ifelse(has_downstream, all_starts[pmin(idx, length(all_starts))],
+                           NA_integer_)
+  min_d <- closest_start - r2_positions
+  result <- ifelse(!has_downstream | is.na(min_d) | min_d > min_dist,
+                   "unexplained",
+                   ifelse(closest_start %in% terminal_set, "terminal", "internal"))
+  c(terminal    = sum(result == "terminal"),
+    internal    = sum(result == "internal"),
+    unexplained = sum(result == "unexplained"))
+}
+
+# Read1 classifier: priming site is AT read1_end (Read1 aligns reverse on +
+# strand viral transcripts; reference_end is the polyT-anchor side). Find the
+# closest polyA start in EITHER direction and classify by absolute distance.
+classify_reads_r1 <- function(r1_ends, polyA_starts, min_dist, terminal_sites) {
+  all_starts <- sort(unique(c(as.integer(polyA_starts), as.integer(terminal_sites))))
+  terminal_set <- as.integer(terminal_sites)
+  idx_after  <- findInterval(r1_ends, all_starts) + 1L
+  idx_before <- pmax(idx_after - 1L, 1L)
+  d_after  <- ifelse(idx_after  <= length(all_starts),
+                     all_starts[pmin(idx_after, length(all_starts))] - r1_ends,
+                     .Machine$integer.max)
+  d_before <- r1_ends - all_starts[idx_before]
+  use_after <- abs(d_after) < abs(d_before)
+  closest_start <- ifelse(use_after,
+                          all_starts[pmin(idx_after, length(all_starts))],
+                          all_starts[idx_before])
+  min_abs <- pmin(abs(d_after), abs(d_before))
+  result  <- ifelse(min_abs > min_dist,
+                    "unexplained",
+                    ifelse(closest_start %in% terminal_set, "terminal", "internal"))
+  c(terminal    = sum(result == "terminal"),
+    internal    = sum(result == "internal"),
+    unexplained = sum(result == "unexplained"))
+}
+
+fasta_lines <- readLines(fasta_path, warn = FALSE)
+sequence    <- toupper(paste(fasta_lines[!grepl("^>", fasta_lines)], collapse = ""))
+
+reads <- read.csv(input_csv)
+if (!"read1_end" %in% names(reads)) {
+  stop("`read1_end` column missing from input CSV — re-run bam_polya_virus.py ",
+       "(via run_polya.sh) to regenerate the per-read CSV with Read1/Read2 ",
+       "reference_end columns.")
+}
+if (!"cb_corrected" %in% names(reads)) {
+  stop("`cb_corrected` column missing from input CSV — re-run ",
+       "bam_polya_virus.py with --cellranger-bam to source corrected CB/UB ",
+       "tags from the Cell Ranger possorted BAM.")
+}
+
+# Filter (a): keep only reads from Seurat-filtered cellIDs
+seurat_cellIDs <- read.csv(seurat_umap_csv)$cellID
+n_before <- nrow(reads)
+reads <- reads %>%
+  filter(!is.na(cb_corrected) & cb_corrected %in% seurat_cellIDs)
+cat(sprintf("Seurat cellID filter: %d -> %d pairs (%.1f%% kept)\n",
+            n_before, nrow(reads), 100 * nrow(reads) / max(n_before, 1)))
+
+# Filter (b): keep only UMIs with > 1 read
+n_before <- nrow(reads)
+reads <- reads %>%
+  group_by(cb_corrected, ub_corrected) %>%
+  filter(n() > 1) %>%
+  ungroup()
+cat(sprintf("UMI read-count > 1 filter: %d -> %d pairs (%.1f%% kept)\n",
+            n_before, nrow(reads), 100 * nrow(reads) / max(n_before, 1)))
+
+r2_pos  <- as.integer(reads$read2_pos)
+r1_ends <- as.integer(reads$read1_end)
+
+polyA_cache <- list()
+
+# Random-position control
+N_RANDOM    <- 20000
+RANDOM_SEED <- 0
+set.seed(RANDOM_SEED)
+random_positions <- sample.int(nchar(sequence), N_RANDOM, replace = TRUE)
+
+# Each entry is one (anchor, end set) pair: the positions to classify, the
+# classifier for that anchor, and that anchor's distance grid.
+end_sets <- list(
+  list(anchor = "Read2", end_set = "reads",  positions = r2_pos,
+       classifier = classify_reads_r2, dists = min_dists_r2),
+  list(anchor = "Read2", end_set = "random", positions = random_positions,
+       classifier = classify_reads_r2, dists = min_dists_r2),
+  list(anchor = "Read1", end_set = "reads",  positions = r1_ends,
+       classifier = classify_reads_r1, dists = min_dists_r1),
+  list(anchor = "Read1", end_set = "random", positions = random_positions,
+       classifier = classify_reads_r1, dists = min_dists_r1)
+)
+
+results_rows <- list()
+for (A in min_lengths) {
+  for (M in max_nonAs) {
+    key <- paste(A, M, sep = "_")
+    if (is.null(polyA_cache[[key]])) {
+      polyA_cache[[key]] <- deduplicate_regions(find_arich_regions(sequence, A, M))
+    }
+    starts <- polyA_cache[[key]]$start_position
+    if (length(starts) == 0L) {
+      cat(sprintf("Skipping %dA_%dM: no internal polyA tracts in genome\n", A, M))
+      next
+    }
+    for (set in end_sets) {
+      for (D in set$dists) {
+        counts <- set$classifier(set$positions, starts, D, terminal_sites)
+        results_rows[[length(results_rows) + 1L]] <- data.frame(
+          anchor             = set$anchor,
+          end_set            = set$end_set,
+          parameters         = sprintf("%dA_%dM_%dD", A, M, D),
+          explained_terminal = counts["terminal"],
+          explained_internal = counts["internal"],
+          unexplained        = counts["unexplained"],
+          row.names          = NULL
+        )
+      }
+    }
+  }
+}
+results_full <- do.call(rbind, results_rows)
+write.csv(results_full, results_csv, row.names = FALSE)
+
+# For in-text internal vs terminal value (per anchor)
+ratios <- results_full %>%
+  filter(end_set == "reads") %>%
+  assignable_sets(label = "Virus") %>%
+  separate(parameters, c("A_str", "M_str", "D_str"), sep = "_", remove = FALSE) %>%
+  mutate(A = as.integer(sub("A$", "", A_str)),
+         M = as.integer(sub("M$", "", M_str)),
+         D = as.integer(sub("D$", "", D_str))) %>%
+  mutate(int_to_term = ifelse(explained_terminal == 0,
+                              Inf,
+                              explained_internal / explained_terminal)) %>%
+  arrange(anchor, int_to_term) %>%
+  select(anchor, parameters, explained_terminal, explained_internal, int_to_term)
+
+
+ratios_pd <- ratios %>%
+  separate(parameters, c("A_str", "M_str", "D_str"), sep = "_", remove = FALSE) %>%
+  mutate(A = as.integer(sub("A$", "", A_str)),
+         M = as.integer(sub("M$", "", M_str)),
+         D = as.integer(sub("D$", "", D_str)))
+for (a in unique(ratios_pd$anchor)) {
+  sub <- ratios_pd %>% filter(anchor == a)
+  most_stringent <- sub %>% arrange(desc(A), M, D) %>% slice(1)
+  cat(sprintf("[%s] Most stringent (%s) internal:terminal ratio: %.1fx\n",
+              a, most_stringent$parameters, most_stringent$int_to_term))
+}
+```
+
+
+## Plotting
+
+Prerequisites: the `## Extraction` chunk above, which writes
+`polyA_explained.csv`.
+
+```{r}
+results_csv <- paste0(plot.root, "Figure2/polyA_explained.csv")
+panel.dir <- paste0(plot.root, "Figure2/")
+supp.dir  <- paste0(plot.root, "Supplemental/SuppFig2/")
+dir.create(panel.dir, recursive = TRUE, showWarnings = FALSE)
+dir.create(supp.dir, recursive = TRUE, showWarnings = FALSE)
+
+results <- read.csv(results_csv) %>%
+  filter(end_set == "reads") %>%
+  separate(parameters,
+           into = c("A_str", "M_str", "D_str"),
+           sep = "_", remove = FALSE) %>%
+  mutate(A = as.integer(sub("A$", "", A_str)),
+         M = as.integer(sub("M$", "", M_str)),
+         D = as.integer(sub("D$", "", D_str)),
+         total = explained_terminal + explained_internal + unexplained,
+         terminal_pct    = explained_terminal / total * 100,
+         internal_pct    = explained_internal / total * 100,
+         unexplained_pct = unexplained    / total * 100) %>%
+  select(-A_str, -M_str, -D_str)
+
+results_r1 <- results %>% filter(anchor == "Read1")
+results_r2 <- results %>% filter(anchor == "Read2")
+
+stack_colors <- c("terminal polyA" = "#006838",
+                  "internal polyA" = "#C4D8B6",
+                  "unexplained"    = "#3b3b3b")
+
+make_stacked_bar <- function(df, horizontal = FALSE) {
+  df_sorted <- df %>% arrange(D, A, M)
+  long <- df_sorted %>%
+    mutate(parameters = factor(parameters, levels = df_sorted$parameters)) %>%
+    pivot_longer(cols = c(terminal_pct, internal_pct, unexplained_pct),
+                 names_to = "category", values_to = "pct") %>%
+    mutate(category = recode(category,
+                             terminal_pct    = "terminal polyA",
+                             internal_pct    = "internal polyA",
+                             unexplained_pct = "unexplained"),
+           category = factor(category,
+                             levels = c("internal polyA",
+                                        "unexplained",
+                                        "terminal polyA")))
+
+  if (horizontal) {
+    inside_labels <- long %>%
+      filter(category != "terminal polyA") %>%
+      mutate(label = sprintf("%.1f%%", pct),
+             text_color = ifelse(category == "internal polyA", "black", "white"))
+    terminal_labels <- long %>%
+      filter(category == "terminal polyA") %>%
+      mutate(label = sprintf("%.1f%%", pct))
+
+    n_params <- length(levels(long$parameters))
+    callout_x <- n_params + 1.4
+    arrow_x_start <- n_params + 1.0
+    arrow_x_end <- n_params + 0.35
+
+    p <- ggplot(long, aes(x = parameters, y = pct, fill = category)) +
+      geom_col(alpha = 0.9, width = 0.85,
+               position = position_stack(reverse = TRUE)) +
+      geom_text(data = inside_labels,
+                aes(label = label, color = text_color),
+                position = position_stack(vjust = 0.5, reverse = TRUE),
+                size = 3, fontface = "bold", show.legend = FALSE) +
+      geom_text(data = terminal_labels,
+                aes(x = parameters, label = label),
+                y = 101, hjust = 0,
+                color = stack_colors[["terminal polyA"]],
+                size = 3, fontface = "bold",
+                inherit.aes = FALSE, show.legend = FALSE) +
+      annotate("text", x = callout_x, y = 12, label = "internal polyA",
+               color = "#C4D8B6", fontface = "bold", size = 3.8) +
+      annotate("text", x = callout_x, y = 70, label = "unexplained",
+               color = "black", fontface = "bold", size = 3.8) +
+      annotate("text", x = callout_x, y = 103, label = "terminal polyA",
+               color = stack_colors[["terminal polyA"]], fontface = "bold",
+               size = 3.8, hjust = 0.5) +
+      annotate("segment", x = arrow_x_start, xend = arrow_x_end,
+               y = 12, yend = 12, color = "#C4D8B6",
+               arrow = arrow(length = unit(0.15, "cm"), type = "closed")) +
+      annotate("segment", x = arrow_x_start, xend = arrow_x_end,
+               y = 70, yend = 70, color = "black",
+               arrow = arrow(length = unit(0.15, "cm"), type = "closed")) +
+      annotate("segment", x = arrow_x_start, xend = arrow_x_end,
+               y = 103, yend = 103, color = stack_colors[["terminal polyA"]],
+               arrow = arrow(length = unit(0.15, "cm"), type = "closed")) +
+      scale_color_identity() +
+      scale_fill_manual(values = stack_colors) +
+      scale_y_continuous(limits = c(0, 110), expand = expansion(0),
+                         breaks = c(0, 25, 50, 75, 100)) +
+      scale_x_discrete(limits = rev, labels = cap_struck_labels(df_sorted)) +
+      coord_flip(clip = "off") +
+      labs(x = "Parameters", y = "Percentage of reads (%)", fill = NULL) +
+      theme_classic(base_size = 11) +
+      theme(legend.position = "none",
+            plot.margin = margin(t = 45, r = 30, b = 10, l = 10))
+  } else {
+    p <- ggplot(long, aes(x = parameters, y = pct, fill = category)) +
+      geom_col(alpha = 0.9, width = 0.85,
+               position = position_stack(reverse = TRUE)) +
+      scale_fill_manual(values = stack_colors) +
+      scale_x_discrete(labels = cap_struck_labels(df_sorted)) +
+      scale_y_continuous(limits = c(0, 100.01), expand = expansion(0)) +
+      labs(x = "Parameters", y = "Percentage (%)", fill = NULL) +
+      theme_classic(base_size = 11) +
+      theme(axis.text.x = element_text(angle = 45, hjust = 1),
+            legend.position = "right")
+  }
+  p
+}
+
+# SuppFig2 B: full sweep
+full_r2 <- make_stacked_bar(results_r2, horizontal = TRUE) +
+  ggtitle("Read2 anchor")
+full_r1 <- make_stacked_bar(results_r1, horizontal = TRUE) +
+  ggtitle("Read1 anchor")
+ggsave(paste0(supp.dir, "PanelB_explained_stacked_bar_sideways_read2.pdf"),
+       full_r2, width = 5, height = 11, device = cairo_pdf)
+ggsave(paste0(supp.dir, "PanelB_explained_stacked_bar_sideways_read1.pdf"),
+       full_r1, width = 5, height = 11, device = cairo_pdf)
+
+# Panel G: Read1 @ 100bp next to Read2 @ 500bp
+panel_d_r2 <- results_r2 %>% filter(D == 500, A %in% 7:10)
+panel_d_r1 <- results_r1 %>% filter(D == 100, A %in% 7:10)
+plot_r2 <- make_stacked_bar(panel_d_r2, horizontal = FALSE) +
+  ggtitle("Read2 anchor, D = 500 bp")
+plot_r1 <- make_stacked_bar(panel_d_r1, horizontal = FALSE) +
+  ggtitle("Read1 anchor, D = 100 bp")
+panel_d_plot <- plot_r1 + plot_r2 + plot_layout(ncol = 2, guides = "collect") &
+  theme(legend.position = "bottom")
+ggsave(paste0(panel.dir, "PanelG_polyA_explained_R1vsR2.pdf"),
+       panel_d_plot, width = 11, height = 5, device = cairo_pdf)
+print(panel_d_plot)
+
+# Print terminal-alignment percentages for both anchors
+cat("\n[Read2, D=500] Terminal % per (A, M):\n")
+panel_d_r2 %>% arrange(A, M) %>%
+  mutate(terminal_pct = signif(terminal_pct, 1)) %>%
+  select(parameters, terminal_pct) %>% print(row.names = FALSE)
+
+cat("\n[Read1, D=100] Terminal % per (A, M):\n")
+panel_d_r1 %>% arrange(A, M) %>%
+  mutate(terminal_pct = signif(terminal_pct, 1)) %>%
+  select(parameters, terminal_pct) %>% print(row.names = FALSE)
+
+# Raw abundance of internal vs terminal explained reads (virus)
+cat("\n[Virus Read2, D=500] Internal vs terminal abundance per (A, M):\n")
+panel_d_r2 %>% arrange(A, M) %>%
+  select(parameters, explained_terminal, explained_internal) %>%
+  print(row.names = FALSE)
+
+cat("\n[Virus Read1, D=100] Internal vs terminal abundance per (A, M):\n")
+panel_d_r1 %>% arrange(A, M) %>%
+  select(parameters, explained_terminal, explained_internal) %>%
+  print(row.names = FALSE)
+
+# Minimum internal:terminal ratio across the parameter sets where at least half
+# the reads are assignable
+virus_ratios <- results %>%
+  assignable_sets(label = "Virus full sweep") %>%
+  mutate(int_to_term = ifelse(explained_terminal == 0,
+                              Inf,
+                              explained_internal / explained_terminal)) %>%
+  select(anchor, parameters, explained_terminal, explained_internal, int_to_term)
+
+for (a in unique(virus_ratios$anchor)) {
+  finite <- virus_ratios %>% filter(anchor == a, is.finite(int_to_term))
+  if (nrow(finite) > 0) {
+    cat(sprintf("[Virus %s] Minimum internal:terminal ratio across retained params: %.1fx (%s)\n",
+                a,
+                min(finite$int_to_term),
+                finite$parameters[which.min(finite$int_to_term)]))
+  }
+}
+
+cat("\nExplained-terminal percentages (full sweep, all D):\n")
+results %>%
+  arrange(D, A, M) %>%
+  mutate(terminal_pct = signif(terminal_pct, 1)) %>%
+  select(parameters, terminal_pct) %>%
+  print(row.names = FALSE)
+```
+
+## Panel F: read-origin maps (Read1/Read2 histograms)
+
+Prerequisites: `mac239.fa`, `d400_class_polya_structure_analysis.csv` from
+`submissionScripts/Figure2/run_polya.sh`, and the D13 UMAP coordinate table
+written by the Figure1 `### Seurat objects` chunk.
+
+```{r}
+fasta_path      <- paste0(genome.root, "Mmul_10_mac239/inputs/mac239.fa")
+input_csv       <- paste0(data.root, "Figure2/polyA/bam_polya_virus/d400_class_polya_structure_analysis.csv")
+seurat_umap_csv <- paste0(data.root, "Figure1/singleCell/Seurat/UMAPcoords/D13UMAP_coords.csv")
+panel.dir       <- paste0(plot.root, "Figure2/")
+dir.create(panel.dir, recursive = TRUE, showWarnings = FALSE)
+
+reads <- read.csv(input_csv)
+seurat_cellIDs <- read.csv(seurat_umap_csv)$cellID
+reads <- reads %>%
+  filter(!is.na(cb_corrected) & cb_corrected %in% seurat_cellIDs) %>%
+  group_by(cb_corrected, ub_corrected) %>%
+  filter(n() > 1) %>%
+  ungroup()
+cat(sprintf("Loaded %d reads after Seurat-cellID + UMI>1 filters\n", nrow(reads)))
+
+find_arich_regions <- function(sequence, min_length, max_nonA) {
+  bases <- strsplit(sequence, "", fixed = TRUE)[[1]]
+  is_a  <- bases == "A"
+  n     <- length(bases)
+  starts_idx <- which(is_a)
+  out <- vector("list", length(starts_idx))
+  k <- 0L
+  for (i in starts_idx) {
+    mismatches <- 0L
+    last_valid_end <- NA_integer_
+    j <- i
+    while (j <= n) {
+      if (!is_a[j]) {
+        mismatches <- mismatches + 1L
+        if (mismatches > max_nonA) break
+      }
+      if (is_a[j] && (j - i + 1L) >= min_length) {
+        last_valid_end <- j
+      }
+      j <- j + 1L
+    }
+    if (!is.na(last_valid_end)) {
+      mm_count <- sum(!is_a[i:last_valid_end])
+      k <- k + 1L
+      out[[k]] <- c(i, last_valid_end, last_valid_end - i + 1L, mm_count)
+    }
+  }
+  if (k == 0L) {
+    return(data.frame(start_position = integer(), end_position = integer(),
+                      length = integer(), mismatches = integer()))
+  }
+  m <- do.call(rbind, out[seq_len(k)])
+  data.frame(start_position = as.integer(m[, 1]),
+             end_position   = as.integer(m[, 2]),
+             length         = as.integer(m[, 3]),
+             mismatches     = as.integer(m[, 4]))
+}
+
+deduplicate_regions <- function(df) {
+  if (nrow(df) == 0L) return(df)
+  df <- df[order(df$start_position, -df$end_position, df$mismatches), ]
+  keep <- logical(nrow(df))
+  max_end <- -1L
+  for (k in seq_len(nrow(df))) {
+    if (df$end_position[k] <= max_end) next
+    keep[k] <- TRUE
+    max_end <- df$end_position[k]
+  }
+  df[keep, , drop = FALSE]
+}
+
+genome_len <- 9602L
+
+# SIVmac239 LTR coordinates (mac239.fa).
+ltr5_start <- 1L
+ltr5_end   <- 540L
+ltr3_start <- 9063L
+ltr3_end   <- 9602L
+pa_5ltr    <- 141L
+pa_3ltr    <- 9602L
+
+# Internal polyA parameters
+overlay_A <- 8L
+overlay_M <- 1L
+
+mac239_seq <- toupper(paste0(readLines(fasta_path)[-1], collapse = ""))
+internal_polyA_starts <- deduplicate_regions(
+  find_arich_regions(mac239_seq, overlay_A, overlay_M)
+)$start_position
+# Drop sites that fall on the two terminal lines
+internal_polyA_starts <- setdiff(internal_polyA_starts, c(pa_5ltr, pa_3ltr))
+cat(sprintf("Internal polyA overlay (A=%d, M=%d): %d sites\n",
+            overlay_A, overlay_M, length(internal_polyA_starts)))
+
+make_position_map <- function(positions, title,
+                              terminal_marks   = c(pa_5ltr, pa_3ltr),
+                              terminal_labels  = c("5'LTR pA (141)",
+                                                   "3'LTR pA (9602)"),
+                              internal_marks   = internal_polyA_starts) {
+  total_reads <- sum(as.integer(positions) >= 0L &
+                     as.integer(positions) <= genome_len, na.rm = TRUE)
+  pos_df <- data.frame(pos = as.integer(positions)) %>%
+    filter(pos >= 0L & pos <= genome_len) %>%
+    count(pos, name = "n") %>%
+    mutate(frac = n / total_reads)
+
+  y_max <- max(pos_df$frac, 1e-5)
+
+  ggplot(pos_df, aes(x = pos, y = frac)) +
+    # LTR rectangles drawn as a thin annotation strip just above the bars
+    annotate("rect", xmin = ltr5_start, xmax = ltr5_end,
+             ymin = y_max * 1.15, ymax = y_max * 1.35,
+             fill = "#E6E6E6", color = "gray40", linewidth = 0.25) +
+    annotate("rect", xmin = ltr3_start, xmax = ltr3_end,
+             ymin = y_max * 1.15, ymax = y_max * 1.35,
+             fill = "#E6E6E6", color = "gray40", linewidth = 0.25) +
+    annotate("text", x = (ltr5_start + ltr5_end) / 2, y = y_max * 1.25,
+             label = "5'LTR", size = 3, color = "gray30") +
+    annotate("text", x = (ltr3_start + ltr3_end) / 2, y = y_max * 1.25,
+             label = "3'LTR", size = 3, color = "gray30") +
+    geom_vline(xintercept = internal_marks, color = "#C4D8B6",
+               linetype = "solid", linewidth = 0.25, alpha = 0.5) +
+    geom_col(width = 1, fill = "gray30", color = NA) +
+    geom_vline(xintercept = terminal_marks, color = "#006838",
+               linetype = "dashed", linewidth = 0.3, alpha = 0.7) +
+    annotate("text", x = terminal_marks, y = y_max * 1.6,
+             label = terminal_labels, color = "#006838",
+             size = 2.8, fontface = "bold", hjust = c(0, 1)) +
+    scale_y_log10(labels = scales::label_percent(accuracy = 0.01),
+                  expand = expansion(mult = c(0, 0.05))) +
+    scale_x_continuous(limits = c(0, genome_len), expand = expansion(0)) +
+    coord_cartesian(clip = "off") +
+    labs(title = title, x = "mac239 position (bp)",
+         y = "Fraction of reads (log)") +
+    theme_classic(base_size = 10) +
+    theme(plot.title  = element_text(hjust = 0.5, face = "italic",
+                                     color = "gray40", size = 11),
+          plot.margin = margin(t = 22, r = 6, b = 6, l = 6),
+          panel.grid  = element_blank())
+}
+
+p_r1 <- make_position_map(reads$read1_end, "Read 1 (cellID-side)")
+p_r2 <- make_position_map(reads$read2_pos, "Read 2 (cDNA-side, reference_start)")
+
+position_map_plot <- p_r1 / p_r2
+ggsave(paste0(panel.dir, "PanelF_read_alignment_position_maps.pdf"),
+       position_map_plot, width = 12, height = 4.5)
+print(position_map_plot)
+```
+
+# Panels L, M: FISH
+
+Comparing Ca*Re, TenX, and long-read to HCR-FISH.
+
+## Data loading
+
+Prerequisite: `bigfish_manual_replicate1.sh` and `bigfish_manual_replicate2.sh`
+
+```{r}
+sample_name <- "Invitro"
+
+care.root <- paste0(data.root, "Figure1/CaRe/")
+care.group <- c(D0 = "uninfected", W0 = "uninfected", D195 = "ART",
+                Invitro = "invitro", Pacute = "viremia", W2 = "viremia")
+
+CaRe.dir <- paste0(care.root, care.group[[sample_name]], "/bamsort/reads/minimum/")
+TenX.dir <- paste0(data.root, "Figure1/singleCell/bamsort/reads/minimum/")
+
+care_file <- paste0(CaRe.dir, sample_name, "_CaRe_filtered.csv")
+tenx_file <- paste0(TenX.dir, sample_name, "_GEX_filtered.csv")
+umap_file <- paste0(data.root, "Figure1/singleCell/Seurat/UMAPcoords/",
+                    sample_name, "UMAP_coords.csv")
+care_data <- if(file.exists(care_file)) read.csv(care_file) else NULL
+tenx_data <- if(file.exists(tenx_file)) read.csv(tenx_file) else NULL
+umap_data <- if(file.exists(umap_file)) read.csv(umap_file, row.names = "X") else NULL
+
+all_cells <- unique(as.character(umap_data$cellID))
+result <- data.frame(cellID = all_cells)
+
+umap_processed <- umap_data %>%
+  select(-any_of("V2"), -sample)
+result <- left_join(result, umap_processed, by = "cellID")
+
+tenx_processed <- tenx_data %>%
+  mutate(cellID = as.character(cellID)) %>%
+  select(cellID, total, US, SS, MS, SS.MS)
+result <- left_join(result, tenx_processed, by = "cellID") %>%
+  mutate(GEX = log1p(total)) %>%
+  mutate(GEX.count = total) %>%
+  mutate(GEX.US = US) %>%
+  mutate(TenX.SS = SS, TenX.MS = MS) %>%
+  mutate(TenX.spliced = SS + MS + SS.MS) %>%
+  select(-total, -US, -SS, -MS, -SS.MS)
+
+care_processed <- care_data %>%
+  rename(CaRe = total) %>%
+  mutate(cellID = as.character(cellID)) %>%
+  select(cellID, CaRe, US, SS, MS, SS.MS)
+result <- left_join(result, care_processed, by = "cellID") %>%
+  mutate(CaRe.count = CaRe) %>%
+  mutate(CaRe = log1p(CaRe)) %>%
+  mutate(spliced = SS + MS + SS.MS)
+
+result[is.na(result)] <- 0
+
+df <- apply_cd4t_gate(result, sample_name,
+                      c("GEX", "GEX.US", "GEX.count",
+                        "TenX.SS", "TenX.MS", "TenX.spliced",
+                        "CaRe", "CaRe.count", "US", "MS", "SS"))
+
+# `total` is the raw molecule count, not log1p(count)
+exp1 <- df %>%
+  filter(CaRe > 0) %>%
+  select(US, SS, MS, spliced, CaRe.count) %>%
+  rename(total = CaRe.count)
+exp2 <- df %>%
+  filter(GEX > 0) %>%
+  select(GEX.US, GEX.count, TenX.SS, TenX.MS, TenX.spliced) %>%
+  rename(US = GEX.US, total = GEX.count,
+         SS = TenX.SS, MS = TenX.MS, spliced = TenX.spliced)
+
+# HCR reference, one table per replicate
+#
+# A cell counts as infected when it carries at least one nef spot that
+# colocalizes with an env spot (n_US + n_SS > 0). 
+HCR.arm <- "batchthr"
+HCR.dir <- paste0(data.root, "Figure2/bigFISH/")
+HCR.paths <- if (HCR.arm == "batchthr") {
+  c(rep1 = "manual_batchthr", rep2 = "manual_replicate2_batchthr")
+} else {
+  c(rep1 = "manual", rep2 = "manual_replicate2")
+}
+
+fish_list <- lapply(HCR.paths, function(d) {
+  read.csv(file.path(HCR.dir, d, "all_cells_stats.csv")) %>%
+    filter(n_US + n_SS > 0) %>%
+    select(n_US, n_SS, n_MS, n_total_spots) %>%
+    rename(US = n_US, SS = n_SS, MS = n_MS, total = n_total_spots) %>%
+    mutate(spliced = SS + MS)
+})
+names(fish_list) <- names(HCR.paths)
+
+for (rep_name in names(fish_list)) {
+  cat(sprintf("HCR %s (%s): %d cells after n_US + n_SS > 0\n",
+              rep_name, HCR.paths[[rep_name]], nrow(fish_list[[rep_name]])))
+}
+
+# Pool by cell
+fish_list$combined <- dplyr::bind_rows(fish_list)
+cat(sprintf("HCR combined: %d cells (%s)\n",
+            nrow(fish_list$combined),
+            paste(sprintf("%s %.0f%%", names(HCR.paths),
+                          100 * sapply(names(HCR.paths),
+                                       function(r) nrow(fish_list[[r]])) /
+                            nrow(fish_list$combined)),
+                  collapse = ", ")))
+
+input_dir <- paste0(data.root, "Figure2/longRead/bamsort/isoform/")
+longread <- read.csv(paste0(input_dir, "cDNA_isoforms.csv"))
+longread <- longread %>%
+  count(cellID, isoform) %>%
+  pivot_wider(names_from = isoform, values_from = n, values_fill = 0) %>%
+  mutate(spliced = MS + SS, total = US + MS + SS + any) %>%
+  select(-cellID, -any)
+
+# Long-read vs short-read viral read totals
+invitro_longread_reads <- sum(longread$total, na.rm = TRUE)
+invitro_care_reads    <- sum(care_data$total, na.rm = TRUE)
+invitro_tenx_reads      <- sum(tenx_data$total, na.rm = TRUE)
+cat("\n=== Invitro viral read totals (long-read vs short-read) ===\n")
+cat(sprintf("  Long-read viral reads:  %d\n", invitro_longread_reads))
+cat(sprintf("  Ca*Re viral reads:      %d (%.1fx more than long-read)\n",
+            invitro_care_reads, invitro_care_reads / invitro_longread_reads))
+cat(sprintf("  TenX viral reads:        %d (%.1fx more than long-read)\n",
+            invitro_tenx_reads, invitro_tenx_reads / invitro_longread_reads))
+cat(sprintf("  Ca*Re + TenX combined:   %d (%.1fx more than long-read)\n",
+            invitro_care_reads + invitro_tenx_reads,
+            (invitro_care_reads + invitro_tenx_reads) / invitro_longread_reads))
+
+# Spliced-isoform fraction
+spliced_cols <- c("SS", "MS", "SS.MS")
+spliced_fraction <- function(df) {
+  cols    <- intersect(spliced_cols, names(df))
+  spliced <- if (length(cols)) sum(rowSums(df[cols], na.rm = TRUE)) else 0
+  total   <- sum(df$total, na.rm = TRUE)
+  c(spliced = spliced, total = total, fraction = spliced / total)
+}
+tenx_spliced   <- spliced_fraction(tenx_data)
+care_spliced <- spliced_fraction(care_data)
+cat("\n=== Spliced isoforms (SS + MS + SS|MS), normalized to total SIV ===\n")
+cat(sprintf("  TenX:    %d spliced / %d total SIV = %.4f (%.3f%%)\n",
+            tenx_spliced["spliced"], tenx_spliced["total"],
+            tenx_spliced["fraction"], 100 * tenx_spliced["fraction"]))
+cat(sprintf("  Ca*Re:  %d spliced / %d total SIV = %.4f (%.3f%%)\n",
+            care_spliced["spliced"], care_spliced["total"],
+            care_spliced["fraction"], 100 * care_spliced["fraction"]))
+```
+
+
+## Panel L: Q-Q plots vs HCR reference
+
+Prerequisites: the `## Data loading` chunk above.
+
+```{r QQ plot}
+output.dir <- paste0(plot.root, "Figure2/")
+dir.create(output.dir, recursive = TRUE, showWarnings = FALSE)
+
+method_data <- list(
+  "Ca*Re" = list(US = exp1$US, SS = exp1$SS, MS = exp1$MS,
+                 spliced = exp1$spliced, total = exp1$total),
+  GEX = list(US = exp2$US, SS = exp2$SS, MS = exp2$MS,
+             spliced = exp2$spliced, total = exp2$total),
+  longread = list(US = longread$US, SS = longread$SS, MS = longread$MS,
+                  spliced = longread$spliced, total = longread$total)
+)
+
+for (rep_name in names(fish_list)) {
+  fish <- fish_list[[rep_name]]
+  ref_data <- list(US = fish$US, SS = fish$SS, MS = fish$MS,
+                   spliced = fish$spliced, total = fish$total)
+
+  plot_qq_grid(
+    method_data = method_data,
+    ref_data = ref_data,
+    var_names = c("total", "spliced", "US", "SS", "MS"),
+    method_names = c("Ca*Re", "TenX", "longread"),
+    width = 20,
+    output_file = paste0(output.dir, "PanelL_QQ_grid_", rep_name, ".pdf")
+  )
+}
+```
+
+## Panel M: Wasserstein distance to HCR reference
+
+Prerequisites: the `## Data loading` chunk above.
+
+```{r}
+for (rep_name in names(fish_list)) {
+  fish <- fish_list[[rep_name]]
+
+  results_US <- compare_methods_to_reference(
+    method_list = list(
+      "Ca*Re" = exp1$US,
+      GEX = exp2$US,
+      longread = longread$US
+    ),
+    ref_vec = fish$US,
+    var_name = "US"
+  )
+
+  results_spliced <- compare_methods_to_reference(
+    method_list = list(
+      "Ca*Re" = exp1$spliced,
+      GEX = exp2$spliced,
+      longread = longread$spliced
+    ),
+    ref_vec = fish$spliced,
+    var_name = "spliced"
+  )
+
+  results_SS <- compare_methods_to_reference(
+    method_list = list(
+      "Ca*Re" = exp1$SS,
+      GEX = exp2$SS,
+      longread = longread$SS
+    ),
+    ref_vec = fish$SS,
+    var_name = "SS"
+  )
+
+  results_MS <- compare_methods_to_reference(
+    method_list = list(
+      "Ca*Re" = exp1$MS,
+      GEX = exp2$MS,
+      longread = longread$MS
+    ),
+    ref_vec = fish$MS,
+    var_name = "MS"
+  )
+
+  results_total <- compare_methods_to_reference(
+    method_list = list(
+      "Ca*Re" = exp1$total,
+      GEX = exp2$total,
+      longread = longread$total
+    ),
+    ref_vec = fish$total,
+    var_name = "total"
+  )
+
+  results_list <- list(results_total, results_spliced, results_US,
+                       results_SS, results_MS)
+
+  plot_wasserstein_bars(
+    results_list = results_list,
+    var_names = c("total", "spliced", "US", "SS", "MS"),
+    var_labels = c("total", "spliced", "unspliced",
+                   "singly spliced", "multiply spliced"),
+    method_names = c("Ca*Re", "TenX", "longread"),
+    output_file = paste0(output.dir, "PanelM_wasserstein_bars_", rep_name, ".pdf")
+  )
+}
+```

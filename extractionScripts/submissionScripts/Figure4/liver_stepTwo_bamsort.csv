@@ -1,0 +1,11 @@
+sample,raw_cellIDs_dataset,raw_cellIDs_folder,raw_cellIDs_sample
+WT_Kras,Normal_SHAM24_R2,extractedData/Figure4/liver/singleCell/counts/,Normal
+WT_Nf2,Normal_SHAM24_R2,extractedData/Figure4/liver/singleCell/counts/,Normal
+WT_Slkv4,Normal_SHAM24_R2,extractedData/Figure4/liver/singleCell/counts/,Normal
+WT_Lsm14b,Normal_SHAM24_R2,extractedData/Figure4/liver/singleCell/counts/,Normal
+WT_Dgkd,Normal_SHAM24_R2,extractedData/Figure4/liver/singleCell/counts/,Normal
+KO_Kras,Esrp2KO_sham24_R1,extractedData/Figure4/liver/singleCell/counts/,Esrp2KO
+KO_Nf2,Esrp2KO_sham24_R1,extractedData/Figure4/liver/singleCell/counts/,Esrp2KO
+KO_Slkv4,Esrp2KO_sham24_R1,extractedData/Figure4/liver/singleCell/counts/,Esrp2KO
+KO_Lsm14b,Esrp2KO_sham24_R1,extractedData/Figure4/liver/singleCell/counts/,Esrp2KO
+KO_Dgkd,Esrp2KO_sham24_R1,extractedData/Figure4/liver/singleCell/counts/,Esrp2KO

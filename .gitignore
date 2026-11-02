@@ -1,0 +1,40 @@
+# ---------------------------------------------------------------------------
+# Withheld from the public release
+# ---------------------------------------------------------------------------
+# The two bamsort read-extraction scripts are available on request, not
+# distributed. See PRIVATE_SCRIPTS.md. Every script that invokes them checks
+# first and exits with a message pointing there.
+# Matched by basename, not by path, so moving them inside the tree cannot
+# quietly un-ignore them (a path-anchored rule did exactly that once).
+bamsort_alignment_reads.py
+bamsort_alignment_reads_host.py
+
+# Python bytecode. This matters more than it looks: a .pyc decompiles back to
+# readable source, so a committed __pycache__ would publish the scripts above.
+__pycache__/
+*.py[cod]
+
+# ---------------------------------------------------------------------------
+# Run artifacts, not source
+# ---------------------------------------------------------------------------
+# SLURM stdout/stderr from this lab's own runs. They carry absolute paths and
+# account names and say nothing a reader needs. The glob is `logs*/` because one
+# of them is `logs_intron1000/` -- a plain `logs/` missed 51 files.
+logs*/
+*.log
+*.out
+*.err
+# and any stray <name>_<jobid>.txt left outside a logs dir
+*_[0-9][0-9][0-9][0-9][0-9][0-9][0-9].txt
+
+# Exploratory one-off harnesses: they pull chunk bodies out of the notebooks to
+# re-run a single analysis, and are not part of the published pipeline.
+plotScripts/.runs/
+
+# R and editor byproducts
+Rplots.pdf
+.Rhistory
+.RData
+.Rproj.user/
+*.Rproj
+.DS_Store

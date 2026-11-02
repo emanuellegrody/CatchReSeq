@@ -1,0 +1,10 @@
+# Per-sample cNMF runs behind Figure3's pattern analysis.
+#   sample    key used for logs and to pick a row
+#   run_name  CNMF_RUN_NAME; names every output file
+#   h5ad      input, relative to DATA_ROOT (write it with pipelineScripts/cnmf/extract_h5ad.R)
+#   k         K chosen from the k_selection plot, passed to cNMF_postprocess.sh
+sample,run_name,h5ad,k
+D195,D195,Figure1/singleCell/Seurat/RDS/D195.h5ad,8
+invitro,invitro,Figure1/singleCell/Seurat/RDS/Invitro.h5ad,7
+W2,W2,Figure1/singleCell/Seurat/RDS/W2.h5ad,8
+Pacute,Pacute,Figure1/singleCell/Seurat/RDS/Pacute.h5ad,8

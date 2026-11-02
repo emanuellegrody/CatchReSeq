@@ -1,0 +1,3830 @@
+---
+title: "Figure3"
+author: "Emanuelle Grody"
+output: html_document
+---
+
+Source these files first before running any analysis:
+
+```{r, message=FALSE, warning=FALSE}
+source("packages.R")
+source("config.R")
+source("functions.R")
+load_packages("enrichment")   # msigdbr + fgsea, used by the GSEA section
+```
+
+For each top tier section (`#`), Extraction must be run before Plotting
+
+# All SIV
+## Extraction
+
+### Ca*Re
+
+Prerequisites: `runAll.sh` (stepTwo - stepFour)
+
+```{r raw_cellIDs}
+raw_cellIDs <- list()
+counts.dir <- paste0(data.root, "Figure1/singleCell/counts/")
+output_dir <- paste0(data.root, "Figure1/singleCell/raw_cellIDs")
+dir.create(output_dir, recursive = TRUE, showWarnings = FALSE)
+
+samples <- c(
+  "D0",
+  "D195",
+  "Invitro",
+  "Pacute",
+  "W0",
+  "W2"
+)
+
+all_cellIDs <- data.frame(cellID = character(), sample = character(), stringsAsFactors = FALSE)
+
+for (sample_name in samples) {
+  rawDataFolder <- paste0(counts.dir, "outs_", sample_name, "/raw_feature_bc_matrix/")
+
+  tryCatch({
+    rawdata <- Read10X(rawDataFolder)
+    umi_counts <- colSums(rawdata)
+    cell_ids <- names(umi_counts[umi_counts > 100]) # keep only cells with transcriptomes
+    raw_cellIDs[[sample_name]] <- cell_ids
+    cat("Loaded", length(cell_ids), "raw cellIDs for sample", sample_name, "\n")
+    
+    # Add to the combined dataframe
+    sample_df <- data.frame(
+      cellID = cell_ids,
+      sample = rep(sample_name, length(cell_ids)),
+      stringsAsFactors = FALSE
+    )
+    all_cellIDs <- rbind(all_cellIDs, sample_df)
+    
+    # Save individual sample's cell IDs to CSV
+    sample_file <- file.path(output_dir, paste0(sample_name, "_raw_cellIDs.csv"))
+    write.csv(data.frame(cellID = cell_ids), sample_file, row.names = FALSE)
+    cat("Saved", length(cell_ids), "cell IDs to", sample_file, "\n")
+    
+  }, error = function(e) {
+    cat("Error processing", sample_name, ":", conditionMessage(e), "\n")
+  })
+  
+  if (exists("rawdata")) {
+    rm(rawdata)
+    gc()
+  }
+}
+
+# Save the combined cell IDs to a single CSV
+combined_file <- file.path(output_dir, "all_raw_cellIDs.csv")
+write.csv(all_cellIDs, combined_file, row.names = FALSE)
+cat("Saved combined cell IDs to", combined_file, "\n")
+
+# To load this data in the future:
+# raw_cellIDs_df <- read.csv("path/to/output/directory/all_raw_cellIDs.csv")
+# raw_cellIDs <- split(raw_cellIDs_df$cellID, raw_cellIDs_df$sample)
+```
+
+
+### TenX
+Prerequisites: `runAll_TenX.sh` (stepTwo - stepFour)
+
+UMAP coords and cell size
+
+```{r}
+counts.dir <- paste0(data.root, "Figure1/singleCell/counts/")
+
+samples <- c(
+  "D0",
+  "D195",
+  "Invitro",
+  "Pacute",
+  "W0",
+  "W2"
+)
+
+output.dir <- paste0(data.root, "Figure1/singleCell/Seurat/UMAPcoords/")
+dir.create(output.dir, recursive = TRUE, showWarnings = FALSE)
+
+for (sample_name in samples) {
+  input.dir <- paste0(counts.dir, "outs_", sample_name, "/filtered_feature_bc_matrix/")
+
+  tryCatch({
+    seurat_obj <- SeuratPipeline(input.dir, sample_name, 
+                                 output_dir = paste0(data.root, "Figure1/singleCell/Seurat/"), 
+                                 plots = TRUE, rds = TRUE)
+    
+    # Cell-level coordinates and clusters, no gene expression columns
+    umap_coords <- Embeddings(seurat_obj, reduction = "umap")
+    sample_df <- data.frame(cellID = colnames(seurat_obj), stringsAsFactors = FALSE)
+    sample_df$UMAP1   <- umap_coords[, 1]
+    sample_df$UMAP2   <- umap_coords[, 2]
+    sample_df$cluster <- Idents(seurat_obj)
+
+    # Add sample and target columns to the dataframe
+    sample_df$size <- colSums(GetAssayData(seurat_obj, assay = "RNA", layer = "counts"))
+    sample_df$sample <- sample_name
+
+    write.csv(sample_df, paste0(output.dir, sample_name, "UMAP_coords.csv"))
+    
+    cat("Processed sample:", sample_name, "\n")
+  }, error = function(e) {
+    cat("Error processing sample", sample_name, ":", conditionMessage(e), "\n\n")
+  })
+}
+```
+
+### combined counts
+
+Prerequisites: the `### CaRe` and `### TenX` chunks above.
+
+CaRe and TenX viral UMI are combined and deconvolved
+
+```{r}
+# Loading
+samples <-  c(
+    "D0",
+    "D195",
+    "Invitro",
+    "Pacute",
+    "W0",
+    "W2"
+)
+
+care.root <- paste0(data.root, "Figure1/CaRe/")
+care.group <- c(D0 = "uninfected", W0 = "uninfected", D195 = "ART",
+                Invitro = "invitro", Pacute = "viremia", W2 = "viremia")
+TenX.dir <- paste0(data.root, "Figure1/singleCell/bamsort/reads/")
+
+combined_data <- list()
+
+for (i in 1:length(samples)) {
+  sample_name <- samples[i]
+
+  cat("Processing", sample_name, "\n")
+
+  # Read all data files
+  CaRe.dir <- paste0(care.root, care.group[[sample_name]], "/bamsort/reads/")
+  care_file <- paste0(CaRe.dir, sample_name, "_UMI_read_counts_full.csv")
+  tenx_file <- paste0(TenX.dir, sample_name, "_UMI_read_counts_full.csv")
+  umap_file <- paste0(data.root, "Figure1/singleCell/Seurat/UMAPcoords/",
+                      sample_name, "UMAP_coords.csv")
+  care_umi_file <- paste0(CaRe.dir, "minimum/valid_UMI/", sample_name, "_valid_cellID_UMI.csv")
+  tenx_umi_file <- paste0(TenX.dir, "minimum/valid_UMI/", sample_name, "_GEX_valid_cellID_UMI.csv")
+  
+  care_data <- if(file.exists(care_file)) read.csv(care_file) else NULL
+  tenx_data <- if(file.exists(tenx_file)) read.csv(tenx_file) else NULL
+  care_umi <- if(file.exists(care_umi_file)) read.csv(care_umi_file) else NULL
+  tenx_umi <- if(file.exists(tenx_umi_file)) read.csv(tenx_umi_file) else NULL
+  umap_data <- read_migrated(umap_file, row.names = "X")
+  
+  # Skip if no data
+  if (is.null(care_data) | is.null(tenx_data) | is.null(umap_data)) {
+    cat("Skipping", sample_name, ": no data\n")
+    next
+  }
+  
+  full_preprocess <- NULL
+  
+  # Join TenX and CaRe and filter by minimums-applied UMI
+  if (!is.null(tenx_data) && !is.null(tenx_umi)) {
+    full_preprocess <- tenx_data %>%
+      mutate(cellID = as.character(cellID)) %>%
+      semi_join(tenx_umi, by = c("cellID", "UMI"))
+  }
+  if (!is.null(care_data) && !is.null(care_umi)) {
+    care_processed <- care_data %>%
+      mutate(cellID = as.character(cellID)) %>%
+      semi_join(care_umi, by = c("cellID", "UMI"))
+    full_preprocess <- full_join(full_preprocess, care_processed, by = c("cellID", "UMI"))
+  }
+  
+  if (is.null(full_preprocess)) {
+    cat("Skipping", sample_name, ": no TenX or CaRe data\n")
+    next
+  }
+
+  full_processed <- resolve_multimap_gs(full_preprocess)
+  full_processed <- full_processed %>%
+    count(cellID, category) %>%
+    pivot_wider(names_from = category, values_from = n, values_fill = 0) %>%
+    mutate(total = log1p(rowSums(select(., -cellID), na.rm = TRUE)))
+  
+  
+  # Get cellIDs from Mmul_10 only df
+  all_cells <- as.character(umap_data$cellID)
+  all_cells <- unique(all_cells)
+
+  result <- data.frame(cellID = all_cells)
+  
+  # Add UMAP data
+  if (!is.null(umap_data)) {
+    umap_processed <- umap_data %>%
+      select(-any_of("V2"), -sample)
+    result <- left_join(result, umap_processed, by = "cellID")
+  }
+  
+  result <- left_join(result, full_processed, by = "cellID")
+  result[is.na(result)] <- 0
+  
+  # Cell type filtering
+  result <- apply_cd4t_gate(result, sample_name,
+                            setdiff(colnames(result),
+                                    c("cellID", "UMAP1", "UMAP2", "cluster", "size"))) %>%
+    select(-size)
+  
+  combined_data[[sample_name]] <- result
+  cat("Processed", sample_name, "\n")
+}
+
+output_dir <- paste0(data.root, "Figure1/combined/dataframes/")
+dir.create(output_dir, recursive = TRUE, showWarnings = FALSE)
+
+for (sample_name in names(combined_data)) {
+  current_df <- combined_data[[sample_name]]
+  
+  both <- current_df %>% filter(total != 0)
+  
+  write.csv(both, paste0(output_dir, sample_name, "_both.csv"), row.names = FALSE)
+  write.csv(current_df, paste0(output_dir, sample_name, "_all.csv"), row.names = FALSE)
+}
+```
+
+
+### Tiers
+
+The contrasts:
+
+  - `GEX_vs_neg`: TenX-positive against clean negatives
+  - `Both_vs_neg`: `both` against clean negatives, the TenX calls that do not
+    rest on the TenX arm's thresholds alone
+  - `CaReOnly_vs_neg`: the Ca*Re-added cells against clean negatives
+  - `Union_vs_neg`: every called cell against clean negatives
+  - `GEX_naive`: TenX-positive against every other cell, as a TenX-only analysis
+    runs it, with the Ca*Re-only cells left among the negatives
+  - `CaReOnly_vs_GEX`: the Ca*Re-added cells against the TenX-positive cells
+
+Prerequisites: the Figure 1 TenX and Ca*Re per-UMI tables through stepFour, the
+`<sample>_CD4T_counts.csv` marker tables, the per-sample UMAP coord tables and
+Seurat RDS, and the ###combined chunk above. 
+
+```{r tier_tables}
+tier_samples   <- c("Invitro", "W2", "Pacute", "D195")
+tier_combined.dir <- paste0(data.root, "Figure1/combined/dataframes/")
+tier_TenX.dir    <- paste0(data.root, "Figure1/singleCell/bamsort/reads/")
+tier_care.root  <- paste0(data.root, "Figure1/CaRe/")
+tier_care.group <- c(D195 = "ART", Invitro = "invitro", Pacute = "viremia", W2 = "viremia")
+tier_coords.dir <- paste0(data.root, "Figure1/singleCell/Seurat/UMAPcoords/")
+tier_rds.dir    <- paste0(data.root, "Figure1/singleCell/Seurat/RDS/")
+tier_table.dir  <- paste0(data.root, "Figure1/combined/tiers/")
+tier_deg.dir    <- paste0(data.root, "Figure1/combined/DEG/tiers/")
+dir.create(tier_table.dir, recursive = TRUE, showWarnings = FALSE)
+dir.create(tier_deg.dir,   recursive = TRUE, showWarnings = FALSE)
+
+tier_levels <- c("both", "GEX_only", "CaRe_only", "neg")
+tier_tenx_positive <- c("both", "GEX_only")
+
+# DEG thresholds
+tier_fc   <- 0.5
+tier_pval <- 0.01
+# Pathway thresholds
+tier_gsea_padj <- 0.05
+
+# Minimum cells for contrasts
+tier_min_cells      <- 10
+# Filter to genes detected in >=fraction of the sample's CD4 T cells
+tier_min_detected   <- 0.05
+tier_exclude_genes  <- c("CD4", "CD8A", "CD8B")
+# Matched negatives
+tier_negative_ratio <- 5
+tier_size_bins      <- 10
+# Draws of the Ca*Re-only group downsampled to the TenX-positive group size
+tier_n_downsample   <- 20
+
+tier_contrasts <- list(
+  GEX_vs_neg      = list(positive = tier_tenx_positive, reference = "neg",
+                         match = TRUE,  by_cluster = TRUE),
+  Both_vs_neg     = list(positive = "both", reference = "neg",
+                         match = TRUE,  by_cluster = TRUE),
+  CaReOnly_vs_neg = list(positive = "CaRe_only", reference = "neg",
+                         match = TRUE,  by_cluster = TRUE),
+  Union_vs_neg    = list(positive = c(tier_tenx_positive, "CaRe_only"),
+                         reference = "neg", match = TRUE, by_cluster = FALSE),
+  GEX_naive       = list(positive = tier_tenx_positive,
+                         reference = c("CaRe_only", "neg"),
+                         match = FALSE, by_cluster = FALSE),
+  CaReOnly_vs_GEX = list(positive = "CaRe_only", reference = tier_tenx_positive,
+                         match = FALSE, by_cluster = FALSE)
+)
+
+
+tier_reference_contrasts <- c(GEX_vs_neg = "TenX-positive", Both_vs_neg = "both")
+
+tier_viral_umis <- function(sample_name, chemistry, cd4_cells) {
+  reads_dir <- if (chemistry == "TenX") tier_TenX.dir else
+    paste0(tier_care.root, tier_care.group[[sample_name]], "/bamsort/reads/")
+  valid_suffix <- if (chemistry == "TenX") "_GEX_valid_cellID_UMI.csv" else
+    "_valid_cellID_UMI.csv"
+  reads_file <- paste0(reads_dir, sample_name, "_UMI_read_counts_full.csv")
+  valid_file <- paste0(reads_dir, "minimum/valid_UMI/", sample_name, valid_suffix)
+  if (!check_migrated(reads_file)) {
+    stop("No ", chemistry, " per-UMI table for ", sample_name)
+  }
+  if (!file.exists(valid_file)) {
+    return(tibble(cellID = character(), UMIs = integer(), spliced = logical()))
+  }
+  read.csv(reads_file) %>%
+    mutate(cellID = as.character(cellID)) %>%
+    semi_join(read.csv(valid_file) %>% mutate(cellID = as.character(cellID)),
+              by = c("cellID", "UMI")) %>%
+    filter(cellID %in% cd4_cells) %>%
+    group_by(cellID) %>%
+    summarize(UMIs = n(), spliced = any(is_siv_splice_category(category)),
+              .groups = "drop")
+}
+
+# Reference cells drawn to match the positive group's composition 
+tier_matched_reference <- function(tiers, positive, reference, seed,
+                                   match_columns = "size", match_bins = tier_size_bins) {
+  column_bins <- lapply(match_columns, function(column) {
+    breaks <- unique(quantile(tiers[[column]], probs = seq(0, 1, length.out = match_bins + 1)))
+    cut(tiers[[column]], breaks, include.lowest = TRUE)
+  })
+  strata <- setNames(do.call(paste, c(list(tiers$cluster), column_bins)), tiers$cellID)
+  wanted <- table(strata[positive])
+  set.seed(seed)
+  unlist(lapply(names(wanted), function(stratum) {
+    pool <- reference[strata[reference] == stratum]
+    pool[sample.int(length(pool),
+                    min(length(pool), tier_negative_ratio * wanted[[stratum]]))]
+  }), use.names = FALSE)
+}
+
+# `positive` overrides the contrast's positive tiers, for the downsampled draws
+tier_run_contrast <- function(obj, tiers, contrast, genes, seed = 1, positive = NULL,
+                              match_columns = "size", match_bins = tier_size_bins) {
+  if (is.null(positive)) positive <- tiers$cellID[tiers$tier %in% contrast$positive]
+  reference <- tiers$cellID[tiers$tier %in% contrast$reference]
+  if (contrast$match) {
+    reference <- tier_matched_reference(tiers, positive, reference, seed,
+                                        match_columns, match_bins)
+  }
+  n <- c(positive = length(positive), reference = length(reference))
+  if (any(n < tier_min_cells)) return(list(deg = NULL, n = n))
+
+  deg <- FindMarkers(obj, ident.1 = positive, ident.2 = reference,
+                     features = genes, assay = "RNA", test.use = "wilcox",
+                     logfc.threshold = 0, min.pct = 0, verbose = FALSE)
+  deg$gene <- rownames(deg)
+  list(deg = deg, n = n)
+}
+
+# Seurat object restricted to the tiered cells
+tier_load_sample <- function(sample_name) {
+  rds <- paste0(tier_rds.dir, sample_name, ".rds")
+  if (!check_migrated(rds)) return(NULL)
+  obj <- readRDS(rds)
+  DefaultAssay(obj) <- "RNA"
+  obj <- JoinLayers(obj, assay = "RNA")
+  tiers <- tier_tables[[sample_name]] %>% filter(cellID %in% colnames(obj))
+  counts <- GetAssayData(obj, assay = "RNA", layer = "counts")[, tiers$cellID]
+  detected <- Matrix::rowMeans(counts > 0)
+  genes <- setdiff(names(detected)[detected >= tier_min_detected], tier_exclude_genes)
+  list(obj = obj, tiers = tiers, genes = genes)
+}
+
+tier_tables <- lapply(setNames(tier_samples, tier_samples), function(sample_name) {
+  # CD4 T cells: passing the marker gate
+  keep_cells <- as.character(
+    read_migrated(paste0(tier_combined.dir, sample_name, "_all.csv"))$cellID)
+  cd4_gate <- cd4t_gate_table(sample_name)
+  if (is.null(cd4_gate)) {
+    stop("CD4 T marker table for ", sample_name,
+         " is unavailable -- run stepFive_markers.R")
+  }
+  cd4_cells <- intersect(cd4_gate$cellID[cd4_gate$cd4t], keep_cells)
+  tenx  <- tier_viral_umis(sample_name, "TenX",   cd4_cells) %>%
+    rename(GEX_UMIs = UMIs, GEX_spliced = spliced)
+  care <- tier_viral_umis(sample_name, "Ca*Re", cd4_cells) %>%
+    rename(care_UMIs = UMIs, care_spliced = spliced)
+  coords <- read_migrated(paste0(tier_coords.dir, sample_name, "UMAP_coords.csv"),
+                          row.names = "X")
+
+  tiers <- tibble(cellID = cd4_cells) %>%
+    left_join(coords %>% transmute(cellID  = as.character(cellID),
+                                   cluster = as.character(cluster),
+                                   size),
+              by = "cellID") %>%
+    left_join(tenx,  by = "cellID") %>%
+    left_join(care, by = "cellID") %>%
+    mutate(tier = factor(case_when(
+      !is.na(GEX_UMIs) & !is.na(care_UMIs) ~ "both",
+      !is.na(GEX_UMIs)                     ~ "GEX_only",
+      !is.na(care_UMIs)                    ~ "CaRe_only",
+      TRUE                                 ~ "neg"), levels = tier_levels),
+      across(c(GEX_UMIs, care_UMIs), ~ coalesce(.x, 0L)),
+      across(c(GEX_spliced, care_spliced), ~ coalesce(.x, FALSE)))
+  write.csv(tiers, paste0(tier_table.dir, sample_name, "_tiers.csv"), row.names = FALSE)
+  tiers
+})
+
+cat("=== CD4 T cells per tier, and median host library size (nCount_RNA) ===\n")
+print(as.data.frame(purrr::map_dfr(tier_tables, function(tiers) {
+  tiers %>% group_by(tier, .drop = FALSE) %>%
+    summarize(n_cells = n(), median_nCount = median(size), .groups = "drop")
+}, .id = "sample")))
+```
+
+### Pathway scores
+Prerequisite: the `tier_tables` chunk above has written `<sample>_tiers.csv`. Loads each per-sample Seurat RDS.
+```{r pathway_scores}
+rds.dir    <- paste0(data.root, "Figure1/singleCell/Seurat/RDS/")
+output.dir <- paste0(data.root, "Figure1/combined/tiers/")
+dir.create(output.dir, recursive = TRUE, showWarnings = FALSE)
+
+pathway_samples <- c("Invitro", "W2", "Pacute", "D195")
+# HIV/SIV-relevant Hallmark sets
+pathway_candidates <- c(
+  "TNFA_SIGNALING_VIA_NFKB", "INFLAMMATORY_RESPONSE",
+  "INTERFERON_ALPHA_RESPONSE", "INTERFERON_GAMMA_RESPONSE",
+  "IL2_STAT5_SIGNALING", "IL6_JAK_STAT3_SIGNALING",
+  "TGF_BETA_SIGNALING", "WNT_BETA_CATENIN_SIGNALING", "NOTCH_SIGNALING",
+  "PI3K_AKT_MTOR_SIGNALING", "MTORC1_SIGNALING",
+  "APOPTOSIS", "P53_PATHWAY", "UNFOLDED_PROTEIN_RESPONSE",
+  "GLYCOLYSIS", "HYPOXIA", "OXIDATIVE_PHOSPHORYLATION",
+  "FATTY_ACID_METABOLISM", "CHOLESTEROL_HOMEOSTASIS",
+  "REACTIVE_OXYGEN_SPECIES_PATHWAY", "COMPLEMENT", "ALLOGRAFT_REJECTION",
+  "MYC_TARGETS_V1", "E2F_TARGETS", "G2M_CHECKPOINT", "DNA_REPAIR")
+pathway_n_random    <- 30
+pathway_random_size <- 100
+
+pathway_msigdb <- msigdbr(species = "Macaca mulatta")
+pathway_hallmark_genes <- pathway_msigdb %>% filter(gs_collection == "H")
+pathway_hallmark <- split(pathway_hallmark_genes$gene_symbol,
+                          sub("^HALLMARK_", "", pathway_hallmark_genes$gs_name))
+stopifnot(all(pathway_candidates %in% names(pathway_hallmark)))
+
+pathway_screen <- list()
+for (sample_name in pathway_samples) {
+  cells <- read.csv(paste0(output.dir, sample_name, "_tiers.csv")) %>%
+    mutate(cellID = as.character(cellID)) %>%
+    filter(tier %in% c("both", "CaRe_only", "neg")) %>%
+    select(cellID, tier, care_UMIs, size)
+  seurat_file <- paste0(rds.dir, sample_name, ".rds")
+  if (!check_migrated(seurat_file)) next
+  obj <- readRDS(seurat_file)
+  DefaultAssay(obj) <- "RNA"
+  obj <- JoinLayers(obj, assay = "RNA")
+  cells <- cells %>% filter(cellID %in% colnames(obj))
+  obj <- subset(obj, cells = cells$cellID)
+
+  # QC covariates the scores are residualized on at plotting time
+  counts <- GetAssayData(obj, assay = "RNA", layer = "counts")
+  ribosomal <- grep("^RP[SL][0-9]", rownames(counts))
+  cells <- cells %>%
+    mutate(nFeature = Matrix::colSums(counts[, cellID] > 0),
+           pct_ribo = 100 * Matrix::colSums(counts[ribosomal, cellID]) /
+                            Matrix::colSums(counts[, cellID]))
+
+  set.seed(1)
+  genes <- rownames(obj[["RNA"]])
+  random_sets <- replicate(pathway_n_random, sample(genes, pathway_random_size),
+                           simplify = FALSE)
+  names(random_sets) <- sprintf("RANDOM_%02d", seq_len(pathway_n_random))
+  gene_sets <- c(lapply(pathway_hallmark[pathway_candidates], intersect, genes), random_sets)
+  gene_sets <- gene_sets[lengths(gene_sets) >= 10]
+  obj <- AddModuleScore(obj, features = gene_sets, name = "pathway_score", seed = 1)
+  scores <- obj@meta.data[, paste0("pathway_score", seq_along(gene_sets)), drop = FALSE]
+  colnames(scores) <- names(gene_sets)
+  scores <- bind_cols(cells[match(colnames(obj), cells$cellID), ], scores)
+
+  negative <- scores$tier == "neg"
+  rho <- sapply(names(gene_sets), function(set)
+    suppressWarnings(cor(scores[[set]][negative], scores$size[negative], method = "spearman")))
+  is_random <- grepl("^RANDOM_", names(gene_sets))
+  envelope <- quantile(abs(rho[is_random]), 0.95)
+  pathway_screen[[sample_name]] <- tibble(sample = sample_name, set = names(gene_sets),
+                                          rho = rho, is_random = is_random,
+                                          random_env95 = envelope,
+                                          depth_dependent = abs(rho) > envelope)
+
+  write.csv(scores %>% select(-all_of(names(random_sets))),
+            paste0(output.dir, sample_name, "_pathway_scores.csv"), row.names = FALSE)
+  cat(sample_name, "-", nrow(scores), "cells,", length(gene_sets), "gene sets scored\n")
+  rm(obj, counts); gc()
+}
+pathway_screen <- bind_rows(pathway_screen)
+write.csv(pathway_screen, paste0(output.dir, "pathway_depth_screen.csv"), row.names = FALSE)
+
+pathway_screen_fails <- pathway_screen %>% filter(!is_random) %>%
+  group_by(set) %>% summarise(n_depth_dependent = sum(depth_dependent), .groups = "drop")
+cat("Kept (depth-dependent in <= 1 sample):\n ",
+    paste(sort(pathway_screen_fails$set[pathway_screen_fails$n_depth_dependent <= 1]),
+          collapse = ", "), "\n")
+cat("Dropped:\n ",
+    paste(sort(pathway_screen_fails$set[pathway_screen_fails$n_depth_dependent > 1]),
+          collapse = ", "), "\n")
+```
+
+### Tier DEG
+
+Prerequisites: the `tier_tables` chunk.
+```{r tier_deg}
+for (sample_name in names(tier_tables)) {
+  loaded <- tier_load_sample(sample_name)
+  if (is.null(loaded)) next
+
+  tests <- list()
+  for (contrast_name in names(tier_contrasts)) {
+    contrast <- tier_contrasts[[contrast_name]]
+    scopes <- list(all = loaded$tiers)
+    if (contrast$by_cluster) {
+      scopes <- c(scopes, split(loaded$tiers, paste0("cluster", loaded$tiers$cluster)))
+    }
+    for (scope in names(scopes)) {
+      result <- tier_run_contrast(loaded$obj, scopes[[scope]], contrast, loaded$genes)
+      tests[[length(tests) + 1]] <- tibble(
+        sample = sample_name, contrast = contrast_name, scope = scope,
+        n_positive = result$n[["positive"]], n_reference = result$n[["reference"]],
+        tested = !is.null(result$deg))
+      if (!is.null(result$deg)) {
+        write.csv(result$deg, tier_deg_file(tier_deg.dir, sample_name, scope, contrast_name),
+                  row.names = FALSE)
+      }
+    }
+  }
+  tests <- bind_rows(tests)
+  write.csv(tests, paste0(tier_deg.dir, sample_name, "_tests.csv"), row.names = FALSE)
+  cat("\n===", sample_name, "-", length(loaded$genes), "genes tested ===\n")
+  print(as.data.frame(tests))
+
+  rm(loaded); gc()
+}
+```
+
+### Print: downsampled Ca*Re-only
+`CaReOnly_vs_neg` with the Ca*Re-only group downsampled to the size of the
+TenX-positive group, `tier_n_downsample` times, each draw with its own matched
+negatives. A gene that stays significant at matched n is not called only because
+Ca*Re adds more cells. Writes `<sample>_CaReOnly_vs_neg_downsampled.csv`, the
+fraction of draws in which each gene passes `tier_fc` and `tier_pval`.
+Prerequisites: the `tier_tables` chunk.
+```{r tier_downsample}
+for (sample_name in names(tier_tables)) {
+  tiers <- tier_tables[[sample_name]]
+  n_tenx_positive <- sum(tiers$tier %in% tier_tenx_positive)
+  care_only <- tiers$cellID[tiers$tier == "CaRe_only"]
+  if (n_tenx_positive < tier_min_cells || length(care_only) <= n_tenx_positive) {
+    cat("Skipping", sample_name, "- TenX-positive", n_tenx_positive,
+        "Ca*Re-only", length(care_only), "\n")
+    next
+  }
+  loaded <- tier_load_sample(sample_name)
+  if (is.null(loaded)) next
+  care_only <- intersect(care_only, loaded$tiers$cellID)
+
+  draws <- purrr::map_dfr(seq_len(tier_n_downsample), function(draw) {
+    set.seed(draw)
+    result <- tier_run_contrast(loaded$obj, loaded$tiers,
+                                tier_contrasts$CaReOnly_vs_neg, loaded$genes,
+                                seed = draw,
+                                positive = sample(care_only, n_tenx_positive))
+    if (is.null(result$deg)) return(NULL)
+    result$deg %>%
+      transmute(gene, draw, avg_log2FC,
+                significant = p_val_adj < tier_pval & abs(avg_log2FC) > tier_fc)
+  })
+  # A gene FindMarkers dropped from a draw counts as not significant in it
+  downsampled <- draws %>%
+    group_by(gene) %>%
+    summarize(fraction_significant = sum(significant) / tier_n_downsample,
+              median_log2FC = median(avg_log2FC), .groups = "drop")
+  write.csv(downsampled,
+            paste0(tier_deg.dir, sample_name, "_CaReOnly_vs_neg_downsampled.csv"),
+            row.names = FALSE)
+  cat(sample_name, "-", tier_n_downsample, "draws of", n_tenx_positive,
+      "Ca*Re-only cells\n")
+
+  rm(loaded); gc()
+}
+```
+
+### cNMF
+
+Prerequisites: `cNMF_workflow.sh` for the first-pass runs, and the per-sample
+Seurat RDS under `Figure1/singleCell/Seurat/RDS/`.
+
+Annotate each pattern by inspecting top-loading genes to flag contaminant cell types
+and quality-dominated patterns. Exclude these cells and rerun cNMF.
+
+```{r}
+per_sample_cnmf <- paste0(data.root, "Figure1/singleCell/cNMF/")
+per_sample_rds  <- paste0(data.root, "Figure1/singleCell/Seurat/RDS/")
+
+# Per-sample cNMF run name + RDS path + selected K.
+#
+# The first-pass runs come from
+# extractionScripts/submissionScripts/Figure3/cNMF_workflow.sh <sample>, then
+# cNMF_postprocess.sh <run_name> <K>; cNMF_workflow.csv carries the .h5ad input
+# and the K below for each sample. The .h5ad itself is written from the Seurat
+# object by pipelineScripts/cnmf/extract_h5ad.R.
+#
+# This chunk drops the CD3D-negative contaminant patterns and writes
+# <base>_counts_cleaned.tsv into cNMF/subpattern/, which cNMF_subpattern.sh then
+# factorizes a second time.
+cnmf_configs <- list(
+  D195      = list(cnmf_dir = per_sample_cnmf, cnmf_prefix = "D195",
+                   rds = file.path(per_sample_rds, "D195.rds"),
+                   cleaned_rds = file.path(per_sample_rds, "D195_cleaned.rds"),
+                   counts_dir  = file.path(per_sample_cnmf, "subpattern"),
+                   counts_base = "D195",
+                   k = 8),
+  invitro   = list(cnmf_dir = per_sample_cnmf, cnmf_prefix = "invitro",
+                   rds = file.path(per_sample_rds, "Invitro.rds"),
+                   cleaned_rds = file.path(per_sample_rds, "Invitro_cleaned.rds"),
+                   counts_dir  = file.path(per_sample_cnmf, "subpattern"),
+                   counts_base = "Invitro",
+                   k = 7),
+  W2        = list(cnmf_dir = per_sample_cnmf, cnmf_prefix = "W2",
+                   rds = file.path(per_sample_rds, "W2.rds"),
+                   cleaned_rds = file.path(per_sample_rds, "W2_cleaned.rds"),
+                   counts_dir  = file.path(per_sample_cnmf, "subpattern"),
+                   counts_base = "W2",
+                   k = 8),
+  Pacute    = list(cnmf_dir = per_sample_cnmf, cnmf_prefix = "Pacute",
+                   rds = file.path(per_sample_rds, "Pacute.rds"),
+                   cleaned_rds = file.path(per_sample_rds, "Pacute_cleaned.rds"),
+                   counts_dir  = file.path(per_sample_cnmf, "subpattern"),
+                   counts_base = "Pacute",
+                   k = 8)
+)
+
+n_top_genes  <- 30
+
+# Min CD3D UMI count to call a cell CD3D+
+cd3d_pos_threshold <- 1
+# Fold-enrichment threshold for flagging a pattern as CD3D- (contaminant)
+cd3d_neg_fold      <- 2
+
+# Canonical marker sets
+marker_sets <- list(
+  Tcell        = c("CD3D", "CD3E", "CD3G", "CD4", "CD8A", "CD8B", "TRAC", "TRBC1", "TRBC2"),
+  Bcell        = c("CD19", "MS4A1", "CD79A", "CD79B", "MZB1", "IGHM", "IGHD"),
+  Myeloid      = c("CD14", "LYZ", "CST3", "FCGR3A", "S100A8", "S100A9", "MS4A7", "CSF1R"),
+  NK           = c("NCAM1", "NKG7", "GNLY", "KLRD1", "KLRF1", "FCGR3A", "PRF1"),
+  Erythroid    = c("HBB", "HBA1", "HBA2", "ALAS2"),
+  Platelet     = c("PPBP", "PF4", "ITGA2B", "GP9"),
+  Mito         = NULL,   # matched by ^MT-
+  Ribosomal    = NULL,   # matched by ^RPS|^RPL
+  Stress_HSP   = c("JUN", "FOS", "JUNB", "EGR1", "HSPA1A", "HSPA1B", "HSPB1", "DNAJB1", "HSP90AA1"),
+  Cycling      = c("MKI67", "TOP2A", "PCNA", "MCM2", "CCNB1", "CDK1")
+)
+
+classify_pattern <- function(top_genes, cd3d_fold = NA_real_) {
+  n <- length(top_genes)
+  mito_frac  <- mean(grepl("^MT-",  top_genes))
+  ribo_frac  <- mean(grepl("^RPS|^RPL", top_genes))
+
+  hits <- sapply(marker_sets, function(g) {
+    if (is.null(g)) return(0L)
+    sum(top_genes %in% g)
+  })
+  hits["Mito"]      <- round(mito_frac * n)
+  hits["Ribosomal"] <- round(ribo_frac * n)
+
+  # Flagging rules
+  quality_dominant <- (mito_frac + ribo_frac) > 0.40
+  cd3d_negative    <- !is.na(cd3d_fold) && cd3d_fold >= cd3d_neg_fold
+
+  call <- if (quality_dominant) {
+    "QUALITY (mito+ribo dominant)"
+  } else if (cd3d_negative) {
+    sprintf("CONTAMINANT: CD3D- localized (%.1fx enriched in CD3D- cells)", cd3d_fold)
+  } else if (hits["Cycling"] >= 2) {
+    "BIOLOGY: cycling"
+  } else if (hits["Tcell"] >= 2) {
+    "BIOLOGY: T cell"
+  } else {
+    "unclassified"
+  }
+  list(call = call, hits = hits,
+       mito_frac = mito_frac, ribo_frac = ribo_frac)
+}
+
+pattern_annotations <- list()
+
+for (sample_name in names(cnmf_configs)) {
+  cfg        <- cnmf_configs[[sample_name]]
+  run_name   <- cfg$cnmf_prefix
+  selected_k <- cfg$k
+
+  # cNMF gene spectra: genes x patterns (z-scored)
+  spectra_file <- file.path(cfg$cnmf_dir,
+                            paste0(run_name, "_spectra_K", selected_k, ".csv"))
+  usage_file   <- file.path(cfg$cnmf_dir,
+                            paste0(run_name, "_usage_K", selected_k, ".csv"))
+  if (!check_migrated(spectra_file, usage_file, cfg$rds)) next
+  spectra <- read.csv(spectra_file, row.names = 1, check.names = FALSE)
+  usage   <- read.csv(usage_file,   row.names = 1, check.names = FALSE)
+
+  # Load Seurat object to classify cells as CD3D+/CD3D-
+  seurat_obj <- readRDS(cfg$rds)
+  DefaultAssay(seurat_obj) <- "RNA"
+  seurat_obj <- JoinLayers(seurat_obj, assay = "RNA")
+  cd3d_counts <- FetchData(seurat_obj, vars = "CD3D", layer = "counts")
+  cd3d_counts$cellID <- rownames(cd3d_counts)
+
+  common_cells <- intersect(rownames(usage), cd3d_counts$cellID)
+  usage_sub    <- usage[common_cells, , drop = FALSE]
+  cd3d_vec     <- cd3d_counts[common_cells, "CD3D"]
+  is_cd3d_pos  <- cd3d_vec >= cd3d_pos_threshold
+  cat(sprintf("\n=== %s  K = %d  |  CD3D+: %d  CD3D-: %d ===\n",
+              sample_name, selected_k, sum(is_cd3d_pos), sum(!is_cd3d_pos)))
+
+  # Per-pattern mean weight in CD3D+ vs CD3D- cells
+  mean_pos <- colMeans(usage_sub[is_cd3d_pos,  , drop = FALSE])
+  mean_neg <- colMeans(usage_sub[!is_cd3d_pos, , drop = FALSE])
+  eps      <- 1e-6
+  cd3d_fold <- (mean_neg + eps) / (mean_pos + eps)  # >1 => pattern enriched in CD3D- cells
+
+  anno_df <- data.frame(pattern = character(), call = character(),
+                        top_genes = character(), mito = numeric(), ribo = numeric(),
+                        mean_cd3d_pos = numeric(), mean_cd3d_neg = numeric(),
+                        cd3d_neg_fold = numeric(),
+                        stringsAsFactors = FALSE)
+
+  for (p in colnames(spectra)) {
+    top_genes <- rownames(spectra)[order(-spectra[[p]])][1:n_top_genes]
+    fold <- if (p %in% names(cd3d_fold)) cd3d_fold[[p]] else NA_real_
+    res  <- classify_pattern(top_genes, cd3d_fold = fold)
+    cat(sprintf("  %-12s  CD3D-/+ fold = %5.2f  %s\n",
+                p, fold, res$call))
+  }
+}
+
+
+# Patterns to drop per sample
+contaminant_patterns <- list(
+  invitro   = c(3, 4, 6),
+  W2        = c(6, 7, 8),
+  D195      = c(5, 6, 7, 8),
+  Pacute    = c(7, 8)
+)
+
+for (sample_name in names(cnmf_configs)) {
+  cfg        <- cnmf_configs[[sample_name]]
+  drop_idx   <- contaminant_patterns[[sample_name]]
+  selected_k <- cfg$k
+
+  if (is.null(drop_idx) || length(drop_idx) == 0) {
+    cat(sprintf("%s: no contaminant patterns set, skipping clean+export\n",
+                sample_name))
+    next
+  }
+
+  dir.create(cfg$counts_dir, recursive = TRUE, showWarnings = FALSE)
+
+  usage_file <- file.path(cfg$cnmf_dir,
+                          paste0(cfg$cnmf_prefix, "_usage_K", selected_k, ".csv"))
+  if (!check_migrated(usage_file, cfg$rds)) next
+  usage      <- read.csv(usage_file, row.names = 1, check.names = FALSE)
+
+  seurat_obj <- readRDS(cfg$rds)
+  DefaultAssay(seurat_obj) <- "RNA"
+  seurat_obj <- JoinLayers(seurat_obj, assay = "RNA")
+
+  common_cells <- intersect(rownames(usage), colnames(seurat_obj))
+  usage_sub    <- usage[common_cells, , drop = FALSE]
+
+  max_pattern   <- apply(usage_sub, 1, which.max)
+  cells_to_drop <- rownames(usage_sub)[max_pattern %in% drop_idx]
+  cells_to_keep <- setdiff(colnames(seurat_obj), cells_to_drop)
+
+  cat(sprintf("%s: dropping %d / %d cells (patterns %s)\n",
+              sample_name, length(cells_to_drop), ncol(seurat_obj),
+              paste(drop_idx, collapse = ",")))
+
+  seurat_clean <- subset(seurat_obj, cells = cells_to_keep)
+
+  counts_mat <- GetAssayData(seurat_clean, layer = "counts")
+  counts_out <- as.data.frame(as.matrix(t(counts_mat)))
+  counts_out <- cbind(cellID = rownames(counts_out), counts_out)
+  out_file <- file.path(cfg$counts_dir, paste0(cfg$counts_base, "_counts_cleaned.tsv"))
+  data.table::fwrite(counts_out, out_file, sep = "\t", quote = FALSE)
+  cat("Saved cleaned counts:", out_file, "  (", nrow(counts_out), "cells x",
+      ncol(counts_out) - 1, "genes )\n")
+
+  saveRDS(seurat_clean, cfg$cleaned_rds)
+}
+```
+
+
+## Plotting
+### Panels A, B, G
+
+Prerequisites: the `### combined counts` chunk above.
+
+UMAPs and cell counts (A = in vitro, B = in vivo W2, G = D195 ART)
+
+TenX-CaRe combined counts used.
+
+```{r}
+input.dir  <- paste0(data.root, "Figure1/combined/dataframes/")
+output.dir <- paste0(plot.root, "Figure3/")
+dir.create(output.dir, recursive = TRUE, showWarnings = FALSE)
+supp.dir <- paste0(plot.root, "Supplemental/SuppFig1/")
+dir.create(supp.dir, recursive = TRUE, showWarnings = FALSE)
+
+TenX.dir        <- paste0(data.root, "Figure1/singleCell/bamsort/reads/")
+samples <- c("D195", "Invitro", "W2")
+umap_panel <- c(Invitro = "PanelA", D195 = "PanelG", W2 = "PanelB")
+
+
+tenx_only_splice_plus <- function(sample_name, keep_cells) {
+  tenx_file     <- paste0(TenX.dir, sample_name, "_UMI_read_counts_full.csv")
+  tenx_umi_file <- paste0(TenX.dir, "minimum/valid_UMI/", sample_name, "_GEX_valid_cellID_UMI.csv")
+  if (!check_migrated(tenx_file, tenx_umi_file)) return(NA_integer_)
+
+  tenx_umi <- read.csv(tenx_umi_file) %>% mutate(cellID = as.character(cellID))
+  cd4_gate <- cd4t_gate_table(sample_name)
+  if (is.null(cd4_gate)) return(NA_integer_)
+  cd4_cells <- cd4_gate$cellID[cd4_gate$cd4t]
+
+  read.csv(tenx_file) %>%
+    mutate(cellID = as.character(cellID)) %>%
+    semi_join(tenx_umi, by = c("cellID", "UMI")) %>%
+    filter(cellID %in% keep_cells, cellID %in% cd4_cells,
+           is_siv_splice_category(category)) %>%
+    pull(cellID) %>% unique() %>% length()
+}
+
+for (sample_name in samples) {
+  current_df <- read.csv(paste0(input.dir, sample_name, "_all.csv"))
+
+  if (!"total" %in% colnames(current_df)) current_df$total <- 0
+  splice_cols <- siv_splice_cols(current_df)
+
+  pfx <- paste0(umap_panel[[sample_name]], "_")
+
+  # Main panels are densities of the positive cells over the gray embedding,
+  # quoted per 1% of the panel area.
+  current_df$splice_pos <- as.numeric(
+    current_df$total > 0 &
+      rowSums(current_df[, splice_cols, drop = FALSE] > 0) > 0)
+  current_df$splice_neg <- as.numeric(current_df$total > 0 &
+                                        current_df$splice_pos == 0)
+
+  siv_scale <- umapDensityScale(current_df, "total")
+  plotDensityUMAP(current_df, colorby = total,
+    "SIV+ cells", output.dir,
+    paste0(pfx, sample_name, "_UMAPdensity_siv.pdf"),
+    density_scale = siv_scale, color = "red", legend_ends_only = TRUE,
+    legend_label = "SIV+ cells per 1% of UMAP area")
+
+  # splice+ and splice- share color scale
+  splice_scale <- umapDensityScale(current_df, c("splice_pos", "splice_neg"))
+  plotDensityUMAP(current_df, colorby = splice_pos,
+    "Splice+ cells", output.dir,
+    paste0(pfx, sample_name, "_UMAPdensity_splicePos.pdf"),
+    density_scale = splice_scale, color = "purple", legend_ends_only = TRUE,
+    legend_label = "splice+ cells per 1% of UMAP area")
+  plotDensityUMAP(current_df, colorby = splice_neg,
+    "Splice- cells", output.dir,
+    paste0(pfx, sample_name, "_UMAPdensity_spliceNeg.pdf"),
+    density_scale = splice_scale, color = "orange", legend_ends_only = TRUE,
+    legend_label = "splice- cells per 1% of UMAP area")
+
+  # Per-cell identity UMAPs of the same data: Supp Fig 1 Panel M
+  current_df$identity <- ifelse(current_df$total > 0, "infected", "uninfected")
+  create_identity_umap(current_df,
+    colors = c("uninfected" = "#E5E5E5", "infected" = "red"),
+    title = "SIV+ cells",
+    point_order = "foreground_last",
+    saveas = paste0(supp.dir, "PanelM_", sample_name, "_UMAP_siv.pdf"))
+
+  current_df$identity <- case_when(
+    current_df$splice_pos > 0 ~ "splice+",
+    current_df$splice_neg > 0 ~ "splice-",
+    TRUE                      ~ "other"
+  )
+  create_identity_umap(current_df,
+    colors = c("other" = "#E5E5E5", "splice-" = "orange", "splice+" = "purple"),
+    title = "Splice status",
+    point_order = "foreground_last",
+    saveas = paste0(supp.dir, "PanelM_", sample_name, "_UMAP_splice.pdf"))
+
+  cat("\n", sample_name,
+      "\nCells total:\t", nrow(current_df),
+      "\nSIV+:\t\t", sum(sum(current_df$identity == "splice+"),
+                         sum(current_df$identity == "splice-")),
+      "\nsplice+:\t", sum(current_df$identity == "splice+"),
+      "\nsplice+ (GEX only):\t", tenx_only_splice_plus(sample_name, current_df$cellID),
+      "\nsplice-:\t", sum(current_df$identity == "splice-"), "\n\n")
+
+}
+
+```
+
+
+### Panels C, D, H: cNMF annotation
+
+Prerequisites: the `### cNMF` chunk above, which writes the cleaned per-sample
+cNMF runs.
+
+cNMF pattern UMAPs + full pattern annotation
+
+```{r}
+output_dir <- paste0(plot.root, "Figure3/")
+supp_dir   <- paste0(plot.root, "Supplemental/SuppFig3/")
+dir.create(output_dir, recursive = TRUE, showWarnings = FALSE)
+dir.create(supp_dir,   recursive = TRUE, showWarnings = FALSE)
+
+sample_configs <- list(
+  # Cleaned runs after contaminant pattern removal
+  D195 = list(
+    load_dir   = paste0(data.root, "Figure1/",
+                        "singleCell/cNMF/subpattern/"),
+    rds        = paste0(data.root, "Figure1/singleCell/Seurat/RDS/D195.rds"),
+    run_name   = "D195_cleaned",
+    plot_name  = "D195",
+    selected_k = 6
+  ),
+  Invitro = list(
+    load_dir   = paste0(data.root, "Figure1/singleCell/cNMF/subpattern/"),
+    rds        = paste0(data.root, "Figure1/singleCell/Seurat/RDS/Invitro.rds"),
+    run_name   = "Invitro_cleaned",
+    plot_name  = "Invitro",
+    selected_k = 5
+  ),
+  W2 = list(
+    load_dir   = paste0(data.root, "Figure1/singleCell/cNMF/subpattern/"),
+    rds        = paste0(data.root, "Figure1/singleCell/Seurat/RDS/W2.rds"),
+    run_name   = "W2_cleaned",
+    plot_name  = "W2",
+    selected_k = 7
+  ),
+  Pacute = list(
+    load_dir   = paste0(data.root, "Figure1/singleCell/cNMF/subpattern/"),
+    rds        = paste0(data.root, "Figure1/singleCell/Seurat/RDS/Pacute.rds"),
+    run_name   = "Pacute_cleaned",
+    plot_name  = "Pacute",
+    selected_k = 6
+  )
+)
+
+# =============================================================================
+# Full pattern annotation
+#   1. Preranked GSEA on gene_spectra Z-scores (Hallmark, Reactome, GO:BP)
+#   2. ORA on top 50 genes per pattern (GO:BP, one-sided hypergeometric)
+# =============================================================================
+organism         <- "Macaca mulatta"
+n_top_genes_ora  <- 50
+gsea_pval_cutoff <- 0.05
+ora_pval_cutoff  <- 0.05
+
+# Rhesus-mapped gene set collections
+hallmark_sets <- msigdbr(species = organism, collection = "H") %>%
+  split(x = .$gene_symbol, f = .$gs_name)
+reactome_sets <- msigdbr(species = organism, collection = "C2", subcollection = "CP:REACTOME") %>%
+  split(x = .$gene_symbol, f = .$gs_name)
+gobp_sets <- msigdbr(species = organism, collection = "C5", subcollection = "GO:BP") %>%
+  split(x = .$gene_symbol, f = .$gs_name)
+
+collapse_leading_edge <- function(df) {
+  if ("leadingEdge" %in% colnames(df) && is.list(df$leadingEdge)) {
+    df$leadingEdge <- vapply(df$leadingEdge, paste, collapse = ";", FUN.VALUE = character(1))
+  }
+  df
+}
+
+cnmf_panel <- c(Invitro = paste0(output_dir, "PanelC_"),
+                W2      = paste0(output_dir, "PanelD_"),
+                D195    = paste0(output_dir, "PanelH_"),
+                Pacute  = paste0(supp_dir,   "PanelA_"))
+
+for (sample_name in names(sample_configs)) {
+  cfg        <- sample_configs[[sample_name]]
+  load_dir   <- cfg$load_dir
+  run_name   <- cfg$run_name
+  plot_name  <- cfg$plot_name
+  selected_k <- cfg$selected_k
+  panel_pfx  <- cnmf_panel[[sample_name]]
+
+  cat("\n==========================================\n")
+  cat("Annotating ", plot_name, " (K = ", selected_k, ")\n", sep = "")
+  cat("==========================================\n")
+
+  usage_file       <- file.path(load_dir, paste0(run_name, "_usage_K",        selected_k, ".csv"))
+  spectra_file     <- file.path(load_dir, paste0(run_name, "_spectra_K",      selected_k, ".csv"))
+  spectra_tpm_file <- file.path(load_dir, paste0(run_name, "_spectra_tpm_K",  selected_k, ".csv"))
+  top_genes_file   <- file.path(load_dir, paste0(run_name, "_top_genes_K",    selected_k, ".csv"))
+
+  if (!check_migrated(usage_file, spectra_file, spectra_tpm_file, top_genes_file,
+                      cfg$rds)) next
+  usage       <- read.csv(usage_file,       row.names = 1, check.names = FALSE)
+  spectra     <- read.csv(spectra_file,     row.names = 1, check.names = FALSE)
+  spectra_tpm <- read.csv(spectra_tpm_file, row.names = 1, check.names = FALSE)
+  top_genes   <- read.csv(top_genes_file,   row.names = 1, check.names = FALSE)
+
+  # --- UMAP: cNMF pattern weight per cell ---
+  seurat_obj <- readRDS(cfg$rds)
+  seurat_obj <- JoinLayers(seurat_obj, assay = "RNA")
+  seurat_obj <- add_cnmf_to_seurat(seurat_obj, usage)
+  fplot <- suppressMessages(
+    FeaturePlot(seurat_obj, features = paste0("Pattern_", 1:selected_k), ncol = 4) &
+      scale_color_viridis_c()
+  )
+  ggsave(fplot, file = paste0(panel_pfx, plot_name, "_cNMF_UMAP.pdf"),
+         width = 16, height = 8)
+
+  cat("\nTop 20 genes per pattern (by Z-score loading):\n")
+  for (pat in colnames(spectra)) {
+    pat_scores <- spectra[[pat]]
+    names(pat_scores) <- rownames(spectra)
+    top_20 <- names(sort(pat_scores, decreasing = TRUE))[1:20]
+    cat(paste0("  ", pat, ": ", paste(top_20, collapse = ", "), "\n"))
+  }
+
+  # --- Preranked GSEA per pattern ---
+  cat("\nRunning preranked GSEA (Hallmark)...\n")
+  suppressWarnings(gsea_hallmark <- run_preranked_gsea(spectra, hallmark_sets, gsea_pval_cutoff))
+  cat("Running preranked GSEA (Reactome)...\n")
+  suppressWarnings(gsea_reactome <- run_preranked_gsea(spectra, reactome_sets, gsea_pval_cutoff))
+  cat("Running preranked GSEA (GO:BP)...\n")
+  suppressWarnings(gsea_gobp     <- run_preranked_gsea(spectra, gobp_sets,     gsea_pval_cutoff))
+
+  cat("\nTop 5 Hallmark terms per pattern (by NES):\n")
+  for (pat in colnames(spectra)) {
+    pat_res <- gsea_hallmark[gsea_hallmark$pattern == pat, ]
+    if (nrow(pat_res) == 0) { cat(paste0("  ", pat, ": no significant terms\n")); next }
+    pat_res <- pat_res[order(abs(pat_res$NES), decreasing = TRUE), ]
+    top_terms <- head(pat_res, 5)
+    for (j in seq_len(nrow(top_terms))) {
+      direction <- ifelse(top_terms$NES[j] > 0, "+", "-")
+      term <- gsub("^HALLMARK_", "", top_terms$pathway[j])
+      cat(sprintf("  %s: [%s] %s (NES=%.2f, padj=%.1e)\n",
+                  pat, direction, term, top_terms$NES[j], top_terms$padj[j]))
+    }
+  }
+
+  # --- ORA per pattern (top 50 genes, GO:BP, hypergeometric) ---
+  top50_per_pattern <- get_top_n_genes(spectra, n = n_top_genes_ora)
+  background <- rownames(spectra)
+
+  cat("\nRunning ORA on top", n_top_genes_ora, "genes per pattern (GO:BP)...\n")
+  ora_results <- list()
+  for (pat in names(top50_per_pattern)) {
+    ora_results[[pat]] <- run_ora_hypergeometric(
+      query_genes      = top50_per_pattern[[pat]],
+      gene_sets        = gobp_sets,
+      background_genes = background,
+      pval_cutoff      = ora_pval_cutoff
+    )
+  }
+
+  cat("\nTop 5 ORA GO:BP terms per pattern:\n")
+  for (pat in names(ora_results)) {
+    res <- ora_results[[pat]]
+    if (nrow(res) == 0) { cat(paste0("  ", pat, ": no significant terms\n")); next }
+    top_terms <- head(res, 5)
+    for (j in seq_len(nrow(top_terms))) {
+      cat(sprintf("  %s: %s (padj=%.1e, %d/%d genes)\n",
+                  pat, gsub("^GOBP_", "", top_terms$pathway[j]),
+                  top_terms$padj[j], top_terms$overlap[j], n_top_genes_ora))
+    }
+  }
+
+  # --- Plot: GSEA Hallmark NES heatmap ---
+  if (nrow(gsea_hallmark) > 0) {
+    nes_matrix <- gsea_hallmark %>%
+      select(pattern, pathway, NES) %>%
+      mutate(pathway = gsub("^HALLMARK_", "", pathway)) %>%
+      pivot_wider(names_from = pattern, values_from = NES, values_fill = 0) %>%
+      tibble::column_to_rownames("pathway")
+    nes_mat <- as.matrix(nes_matrix)
+    max_abs <- max(abs(nes_mat), na.rm = TRUE)
+    p_hallmark <- pheatmap::pheatmap(
+      nes_mat,
+      color        = colorRampPalette(c("blue", "white", "red"))(100),
+      breaks       = seq(-max_abs, max_abs, length.out = 101),
+      cluster_cols = TRUE, cluster_rows = TRUE,
+      fontsize_row = 7, fontsize_col = 10,
+      main         = paste0(plot_name, " GSEA Hallmark NES per cNMF pattern"),
+      silent       = TRUE
+    )
+    ggsave(file.path(supp_dir, paste0(plot_name, "_cNMF_gsea_hallmark_heatmap.pdf")),
+           plot = p_hallmark, width = 10, height = max(6, nrow(nes_mat) * 0.25))
+    cat("\nSaved Hallmark GSEA heatmap.\n")
+  }
+
+  # --- Save GSEA/ORA CSVs to SuppFig3 ---
+  write.csv(collapse_leading_edge(gsea_hallmark),
+            file.path(supp_dir, paste0(plot_name, "_gsea_hallmark_results.csv")), row.names = FALSE)
+  write.csv(collapse_leading_edge(gsea_reactome),
+            file.path(supp_dir, paste0(plot_name, "_gsea_reactome_results.csv")), row.names = FALSE)
+  write.csv(collapse_leading_edge(gsea_gobp),
+            file.path(supp_dir, paste0(plot_name, "_gsea_gobp_results.csv")),     row.names = FALSE)
+
+  ora_combined <- do.call(rbind, lapply(names(ora_results), function(pat) {
+    df <- ora_results[[pat]]
+    if (nrow(df) > 0) df$pattern <- pat
+    df
+  }))
+  if (!is.null(ora_combined) && nrow(ora_combined) > 0) {
+    write.csv(ora_combined,
+              file.path(supp_dir, paste0(plot_name, "_ora_gobp_results.csv")), row.names = FALSE)
+  }
+
+  top50_df <- data.frame(
+    lapply(top50_per_pattern, function(x) { length(x) <- n_top_genes_ora; x }),
+    check.names = FALSE
+  )
+  write.csv(top50_df,
+            file.path(supp_dir, paste0(plot_name, "_top50_genes_per_pattern.csv")), row.names = FALSE)
+
+  cat("Annotation outputs for", plot_name, "saved to:", supp_dir, "\n")
+}
+```
+
+Program names below come from one shared basis across the four per-sample
+cNMF runs, so a program that recurs in several samples carries the same name.
+The similarity heatmap behind it is SuppFig3 cNMF_metaprogram_similarity.pdf.
+
+
+
+
+### Panels C, D, H: enrichment
+
+Enrichment dot plots and violins. Four contrasts per panel, two of which carry
+into the figure:
+
+  - `SIV+ vs SIV-`, every uninfected cell as reference (figure)
+  - `SIV+ vs SIV-`, uninfected cells matched on host library size decile
+  - `splice+ vs splice-`, unadjusted (figure)
+  - `splice+ vs splice-`, viral burden held fixed
+
+Host library size is matched on rather than regressed out, and enters the splice
+contrast not at all. The tests behind that choice are in SuppFigs.Rmd:
+`suppfig3_depth_confounding`, before Supp Fig 3 Panel B, for the two detection
+tests, and `suppfig2_panelF_depth`, after Supp Fig 2 Panel F, for the splice one.
+
+Prerequisite: the cleaned cNMF run for each sample, i.e. the second pass from
+`extractionScripts/submissionScripts/Figure3/cNMF_subpattern.sh` followed by
+`cNMF_postprocess.sh <run_name> <K>`. The K each cleaned run was taken to is in
+`cNMF_subpattern.csv` and is written into the usage filename the chunk below
+reads.
+
+```{r}
+combined_dir <- paste0(data.root, "Figure1/combined/dataframes/")
+output_dir   <- paste0(plot.root, "Figure3/")
+supp_dir     <- paste0(plot.root, "Supplemental/SuppFig3/")
+dir.create(output_dir, recursive = TRUE, showWarnings = FALSE)
+dir.create(supp_dir,   recursive = TRUE, showWarnings = FALSE)
+
+# -log10(adj. p) cap 
+p_scale_cap <- 10
+
+# Host library size per cell
+coords_dir <- paste0(data.root, "Figure1/",
+                     "singleCell/Seurat/UMAPcoords/")
+
+enrichment_panels <- list(
+  list(
+    panel      = "PanelC_Invitro",
+    usage_file = paste0(data.root, "Figure1/",
+                        "singleCell/cNMF/subpattern/Invitro_cleaned_usage_K5.csv"),
+    tables     = c("Invitro_all.csv"),
+    coords     = c("InvitroUMAP_coords.csv"),
+    pattern_labels = cnmf_metaprogram_labels$Invitro,
+    out_dir    = output_dir
+  ),
+  list(
+    panel      = "PanelD_W2",
+    usage_file = paste0(data.root, "Figure1/",
+                        "singleCell/cNMF/subpattern/W2_cleaned_usage_K7.csv"),
+    tables     = c("W2_all.csv"),
+    coords     = c("W2UMAP_coords.csv"),
+    pattern_labels = cnmf_metaprogram_labels$W2,
+    out_dir    = output_dir
+  ),
+  list(
+    panel      = "PanelH_D195",
+    usage_file = paste0(data.root, "Figure1/",
+                        "singleCell/cNMF/subpattern/D195_cleaned_usage_K6.csv"),
+    tables     = c("D195_all.csv"),
+    coords     = c("D195UMAP_coords.csv"),
+    pattern_labels = cnmf_metaprogram_labels$D195,
+    out_dir    = output_dir
+  ),
+  list(
+    panel      = "PanelA_Pacute",
+    usage_file = paste0(data.root, "Figure1/",
+                        "singleCell/cNMF/subpattern/Pacute_cleaned_usage_K6.csv"),
+    tables     = c("Pacute_all.csv"),
+    coords     = c("PacuteUMAP_coords.csv"),
+    pattern_labels = cnmf_metaprogram_labels$Pacute,
+    out_dir    = supp_dir
+  )
+)
+
+# Pass 1: every comparison for every panel, nothing drawn yet.
+enrichment_results <- list()
+for (cfg in enrichment_panels) {
+  if (!check_migrated(cfg$usage_file)) next
+  usage <- read.csv(cfg$usage_file, row.names = 1, check.names = FALSE)
+
+  all <- bind_rows(lapply(cfg$tables, function(f) read.csv(paste0(combined_dir, f))))
+
+  infected <- all %>% filter(total > 0)
+  infected_cellids <- infected$cellID
+
+  splice_cols <- siv_splice_cols(infected)
+  splice_pos_cellids <- infected %>%
+    filter(if_any(all_of(splice_cols), ~ . > 0)) %>%
+    pull(cellID)
+  splice_neg_cellids <- setdiff(infected_cellids, splice_pos_cellids)
+  if (length(splice_pos_cellids) < 3 || length(splice_neg_cellids) < 3) {
+    cat("Skipping", cfg$panel, "- splice+", length(splice_pos_cellids),
+        "splice-", length(splice_neg_cellids), "\n"); next
+  }
+
+  infected_comparison <- compare_pattern_usage(usage, infected_cellids)
+  splicing_comparison <- compare_pattern_usage(usage, splice_pos_cellids,
+                                               splice_neg_cellids,
+                                               group_labels = c("splice_pos", "splice_neg"))
+
+  # splice+ vs splice- at fixed viral burden. Burden is what decides whether a
+  # spliced UMI is seen, so it confounds the splice call and is held fixed; host
+  # library size does not predict splice status once burden is in the model
+  # (see compare_pattern_usage_adjusted) and is left out.
+  burden_cols <- setdiff(colnames(infected),
+                         c("cellID", "UMAP1", "UMAP2", "cluster", "total"))
+  burden_covariates <- data.frame(
+    log_burden = log1p(rowSums(infected[, burden_cols, drop = FALSE])),
+    row.names  = as.character(infected$cellID))
+  splicing_comparison_adj <- compare_pattern_usage_adjusted(
+    usage, splice_pos_cellids, splice_neg_cellids,
+    covariates = burden_covariates,
+    group_labels = c("splice_pos", "splice_neg"))
+
+  # SIV+ vs SIV- against uninfected cells matched on host library size decile.
+  # The size gap between infected and uninfected cells is a property of infected
+  # cells rather than a detection artifact, so it is matched on rather than
+  # regressed out (see compare_pattern_usage_matched).
+  size_tab <- bind_rows(lapply(cfg$coords, function(f)
+    read.csv(paste0(coords_dir, f))[, c("cellID", "size")]))
+  host_size <- setNames(size_tab$size, as.character(size_tab$cellID))
+  infected_comparison_matched <- compare_pattern_usage_matched(
+    usage, infected_cellids, match_values = host_size)
+
+  enrichment_results[[cfg$panel]] <- list(
+    cfg = cfg,
+    comparisons = list(
+      list(result = infected_comparison,
+           label  = "SIV+ vs SIV-",
+           colors = c("#E41A1C", "gray70"), figure = TRUE),
+      list(result = infected_comparison_matched,
+           label  = "SIV+ vs SIV-\n(depth-matched)",
+           colors = c("#E41A1C", "gray70"), figure = FALSE),
+      list(result = splicing_comparison,
+           label  = "splice+ vs splice-",
+           colors = c("purple", "orange"), figure = TRUE),
+      list(result = splicing_comparison_adj,
+           label  = "splice+ vs splice-\n(burden controlled)",
+           colors = c("purple", "orange"), figure = FALSE)
+    ))
+
+  cat("\n", cfg$panel, ": SIV+", length(infected_cellids),
+      "| splice+", length(splice_pos_cellids), "| splice-", length(splice_neg_cellids), "\n")
+  print(merge(infected_comparison$comparison,
+              infected_comparison$stats[, c("pattern", "p_adj")], by = "pattern"))
+  cat("  SIV+ vs SIV-, host library size decile matched (",
+      infected_comparison_matched$n_cells["group1"], "vs",
+      infected_comparison_matched$n_cells["group2"], "cells):\n")
+  print(merge(infected_comparison_matched$comparison,
+              infected_comparison_matched$stats[, c("pattern", "p_adj")], by = "pattern"))
+  print(merge(splicing_comparison$comparison,
+              splicing_comparison$stats[, c("pattern", "p_adj")], by = "pattern"))
+  cat("  splice+ vs splice-, viral burden controlled (",
+      splicing_comparison_adj$n_cells["group1"], "vs",
+      splicing_comparison_adj$n_cells["group2"], "cells):\n")
+  print(merge(splicing_comparison_adj$comparison,
+              splicing_comparison_adj$stats[, c("pattern", "adjusted_difference", "p_adj")],
+              by = "pattern"))
+}
+
+# Shared colour limits. Within a panel the two rows of a contrast already share
+# one scale (they are drawn in the same colours), and taking the maximum across
+# panels puts all four on one scale, so a colour means the same fold change
+# wherever it appears. Contaminant programs are excluded here exactly as the
+# plot excludes them: a degenerate fold change in one would otherwise set the
+# limit for every panel.
+enrichment_limits <- function(results, rows) {
+  lims <- purrr::map_dfr(results, function(res) {
+    keep <- names(res$cfg$pattern_labels)[
+      !grepl("contaminant|contamination", res$cfg$pattern_labels, ignore.case = TRUE)]
+    purrr::map_dfr(res$comparisons[rows(res$comparisons)], function(entry)
+      entry$result$comparison %>%
+        filter(pattern %in% keep) %>%
+        transmute(group = sub("\n.*", "", entry$label),
+                  fc    = abs(log2_fold_change)))
+  }) %>%
+    group_by(group) %>%
+    summarise(limit = max(fc[is.finite(fc)]), .groups = "drop")
+  setNames(lims$limit, paste0("log2 FC, ", lims$group))
+}
+is_figure_row <- function(comparisons) vapply(comparisons, `[[`, logical(1), "figure")
+
+# The figure panels carry two of the four rows, so their colours are scaled to
+# that range rather than to the wider one the supplement spans.
+fc_limits_all    <- enrichment_limits(enrichment_results, function(x) rep(TRUE, length(x)))
+fc_limits_figure <- enrichment_limits(enrichment_results, is_figure_row)
+cat("\nShared log2 FC limits, all contrasts (supplement):\n"); print(round(fc_limits_all, 2))
+cat("Shared log2 FC limits, figure rows only (Figure 3):\n"); print(round(fc_limits_figure, 2))
+
+# Pass 2: the figure panel (controlled rows) and the supplemental version
+# (every contrast), each on its own shared scale.
+enrichment_plots <- list()
+for (res in enrichment_results) {
+  enrichment_plots[[res$cfg$panel]] <- plot_pattern_enrichment(
+    comparisons    = res$comparisons[is_figure_row(res$comparisons)],
+    output_prefix  = paste0(res$cfg$out_dir, res$cfg$panel, "_cNMF_enrichment"),
+    styles         = "dots",
+    pattern_labels = res$cfg$pattern_labels,
+    max_neglog10_p = p_scale_cap,
+    fc_limits      = fc_limits_figure)$dots
+
+  plot_pattern_enrichment(
+    comparisons    = res$comparisons,
+    output_prefix  = paste0(supp_dir, sub("^Panel[A-Z]_", "", res$cfg$panel),
+                            "_cNMF_enrichment_allContrasts"),
+    styles         = "dots",
+    pattern_labels = res$cfg$pattern_labels,
+    max_neglog10_p = p_scale_cap,
+    fc_limits      = fc_limits_all)
+}
+
+
+## violins
+combined_dir <- paste0(data.root, "Figure1/combined/dataframes/")
+output_dir   <- paste0(plot.root, "Figure3/")
+dir.create(output_dir, recursive = TRUE, showWarnings = FALSE)
+
+subset_panels <- list(
+  Invitro = list(
+    usage_file = paste0(data.root, "Figure1/",
+                        "singleCell/cNMF/subpattern/Invitro_cleaned_usage_K5.csv"),
+    tables     = c("Invitro_all.csv")
+  ),
+  W2 = list(
+    usage_file = paste0(data.root, "Figure1/",
+                        "singleCell/cNMF/subpattern/W2_cleaned_usage_K7.csv"),
+    tables     = c("W2_all.csv")
+  ),
+  D195 = list(
+    usage_file = paste0(data.root, "Figure1/",
+                        "singleCell/cNMF/subpattern/D195_cleaned_usage_K6.csv"),
+    tables     = c("D195_all.csv")
+  )
+)
+
+for (plot_name in names(subset_panels)) {
+  cfg   <- subset_panels[[plot_name]]
+  if (!check_migrated(cfg$usage_file)) next
+  usage <- read.csv(cfg$usage_file, row.names = 1, check.names = FALSE)
+
+  all <- bind_rows(lapply(cfg$tables, function(f) read.csv(paste0(combined_dir, f))))
+
+  infected <- all %>% filter(total > 0)
+  infected_cellids <- infected$cellID
+
+  # SIV+ vs SIV-
+  comparison <- compare_pattern_usage(usage, infected_cellids)
+  plot_pattern_violins(comparison, paste0(output_dir, plot_name, "_cNMF_infected_violins.pdf"),
+                       colors = c("#E41A1C", "gray70"))
+
+  # splice+ vs splice-
+  splice_cols <- siv_splice_cols(infected)
+  splice_pos <- infected %>%
+    filter(if_any(all_of(splice_cols), ~ . > 0))
+  splice_pos_cellids <- splice_pos$cellID
+  splice_neg_cellids <- setdiff(infected_cellids, splice_pos_cellids)
+
+  if (length(splice_pos_cellids) == 0) {
+    cat("Skipping", plot_name, "-- no cells SIV+splice+\n")
+  } else {
+    comparison <- compare_pattern_usage(usage, splice_pos_cellids, splice_neg_cellids,
+                                        group_labels = c("splice_pos", "splice_neg"))
+    plot_pattern_violins(comparison, paste0(output_dir, plot_name, "_cNMF_splicing_violins.pdf"),
+                         group_names = c("splice_pos", "splice_neg"),
+                         colors = c("purple", "orange"))
+    cat("Saved plots:", plot_name, "\n")
+  }
+}
+```
+
+
+
+### Panel F: splice+ and viral transcript load
+
+Prerequisite: the `tier_tables` chunk has written `<sample>_tiers.csv`.
+
+```{r panelF_splice_burden}
+tier_table.dir <- paste0(data.root, "Figure1/combined/tiers/")
+output.dir     <- paste0(plot.root, "Figure3/")
+dir.create(output.dir, recursive = TRUE, showWarnings = FALSE)
+
+panelF_samples <- c(Invitro = "in vitro", W2 = "viremia (W2)")
+panelF_pal <- setNames(c("#594A42", "#EE2A7B"), unname(panelF_samples))
+
+# Bins break at 8, the `tier_binload_cut` of Panel C, so that panel's low (2-7)
+# and high (8+) load groups can be read straight off this axis; above the break
+# bins double in width, so the x axis stays even on a log scale. A bin holding
+# fewer cells than this carries no usable rate.
+panelF_bins <- c(0, 2, 4, 7, 16, 32, 64, 128, Inf)
+panelF_bin_labels <- c("1-2", "3-4", "5-7", "8-16", "17-32", "33-64", "65-128", ">128")
+panelF_min_cells <- 10
+
+panelF_cells <- bind_rows(lapply(names(panelF_samples), function(sample_name) {
+  read.csv(paste0(tier_table.dir, sample_name, "_tiers.csv")) %>%
+    filter(care_UMIs > 0) %>%
+    transmute(sample = factor(panelF_samples[sample_name], levels = unname(panelF_samples)),
+              cellID = as.character(cellID), care_UMIs, care_spliced)
+})) %>%
+  mutate(bin = cut(care_UMIs, panelF_bins, labels = panelF_bin_labels))
+
+panelF_rate <- panelF_cells %>%
+  group_by(sample, bin) %>%
+  summarise(cells = n(), splice_pos = sum(care_spliced), rate = mean(care_spliced),
+            .groups = "drop") %>%
+  filter(cells >= panelF_min_cells)
+print(as.data.frame(panelF_rate))
+
+panelF_distribution <- panelF_cells %>%
+  count(sample, bin) %>%
+  group_by(sample) %>% mutate(frac = n / sum(n)) %>% ungroup()
+
+# Per-sample splice+ rate standardised to the other sample's burden
+# distribution, splitting the observed gap into the share the burden shift
+# carries and the share left at matched burden.
+panelF_standardise <- function(rate_sample, distribution_sample) {
+  rates <- panelF_rate %>% filter(sample == rate_sample) %>% select(bin, rate)
+  weights <- panelF_distribution %>% filter(sample == distribution_sample) %>% select(bin, frac)
+  full_join(rates, weights, by = "bin") %>%
+    filter(!is.na(frac)) %>%
+    mutate(rate = ifelse(is.na(rate), 0, rate)) %>%
+    summarise(value = sum(rate * frac)) %>% pull(value)
+}
+panelF_observed <- panelF_cells %>% group_by(sample) %>%
+  summarise(cells = n(), splice_pos = sum(care_spliced), rate = mean(care_spliced),
+            ge32 = mean(care_UMIs >= 32), q90 = quantile(care_UMIs, 0.9), .groups = "drop")
+print(as.data.frame(panelF_observed))
+cat(sprintf(
+  "gap %.1f points; W2 rates on in vitro burden %.1f%% (burden shift %.1f points, %.0f%%); in vitro rates on W2 burden %.1f%% (residual %.1f points, %.0f%%)\n",
+  100 * diff(rev(panelF_observed$rate)),
+  100 * panelF_standardise("viremia (W2)", "in vitro"),
+  100 * (panelF_standardise("viremia (W2)", "in vitro") - panelF_observed$rate[2]),
+  100 * (panelF_standardise("viremia (W2)", "in vitro") - panelF_observed$rate[2]) /
+    diff(rev(panelF_observed$rate)),
+  100 * panelF_standardise("in vitro", "viremia (W2)"),
+  100 * (panelF_standardise("in vitro", "viremia (W2)") - panelF_observed$rate[2]),
+  100 * (panelF_standardise("in vitro", "viremia (W2)") - panelF_observed$rate[2]) /
+    diff(rev(panelF_observed$rate))))
+
+# The curves are labelled in place, so neither panel carries a colour legend.
+panelF_curve_labels <- data.frame(
+  sample    = factor(unname(panelF_samples), levels = unname(panelF_samples)),
+  x         = c(2.5, 4.4),
+  y         = c(0.93, 0.40),
+  fontface  = c("italic", "plain"))
+
+panelF_theme <- theme_classic(base_size = 13) +
+  theme(axis.line = element_line(linewidth = 0.8, colour = "black"),
+        axis.ticks = element_line(linewidth = 0.8, colour = "black"),
+        axis.text = element_text(colour = "black"),
+        legend.position = "right")
+
+panelF_rate_plot <- ggplot(panelF_rate, aes(bin, rate, color = sample, group = sample)) +
+  geom_line(linewidth = 1) +
+  geom_point(aes(size = cells)) +
+  geom_text(data = panelF_curve_labels,
+            aes(x, y, label = sample, color = sample, fontface = fontface),
+            inherit.aes = FALSE, size = 4.4, show.legend = FALSE) +
+  scale_color_manual(values = panelF_pal, guide = "none") +
+  scale_size_area(max_size = 4, name = "cells") +
+  scale_y_continuous(labels = scales::percent_format(accuracy = 1), limits = c(0, 1),
+                     breaks = c(0, 0.25, 0.5, 0.75, 1), expand = expansion(mult = c(0, 0.02))) +
+  labs(x = NULL, y = "splice+ (% of cells in bin)") +
+  panelF_theme +
+  theme(axis.text.x = element_blank(), axis.ticks.x = element_blank(),
+        axis.line.x = element_blank())
+
+panelF_distribution_plot <- ggplot(panelF_distribution, aes(bin, frac, fill = sample)) +
+  geom_col(position = position_dodge(width = 0.8), width = 0.75) +
+  scale_fill_manual(values = panelF_pal, guide = "none") +
+  scale_y_continuous(labels = scales::percent_format(accuracy = 1),
+                     expand = expansion(mult = c(0, 0.05))) +
+  labs(x = "Ca*Re viral UMIs per cell", y = "cells (% of sample)") +
+  panelF_theme +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+ggsave(paste0(output.dir, "PanelF_spliceRate_vs_burden.pdf"),
+       panelF_rate_plot / panelF_distribution_plot + patchwork::plot_layout(heights = c(2, 1)),
+       width = 5.5, height = 6)
+```
+
+### Gene-level concordance
+Whole-sample Ca*Re-only cells against each TenX reference contrast in
+`tier_reference_contrasts`, over the genes both contrasts tested: `GEX_vs_neg`
+(every TenX-positive cell) and `Both_vs_neg` (the cells both chemistries call, so
+no GEX call rests on the TenX arm's thresholds alone). Each gene is classed as
+`shared` (significant in both, same sign), `discordant` (both, opposite sign),
+`GEX only`, `Ca*Re-added only`, or `ns`. For the reference DEGs: the fraction
+whose fold change has the same sign in the Ca*Re-only cells (binomial test
+against 0.5); for `GEX_vs_neg`, how much of their fold change survives in
+`GEX_naive` (median ratio of |log2FC|, paired Wilcoxon on |log2FC|). A
+Ca*Re-added-only gene is traced to its likely source:
+`fraction_significant_matched_n` from the downsampled draws, and
+`in_GEX_untestable_cluster` if it is significant in `CaReOnly_vs_neg` inside a
+cluster where the reference contrast was skipped for cell count.
+Writes `<sample>_<reference>_gene_classes.csv`.
+Prerequisites: the `tier_tables` and `tier_deg` chunks; `tier_downsample` for the
+matched-n column.
+```{r tier_concordance, warning=FALSE}
+deg.dir   <- paste0(data.root, "Figure1/combined/DEG/tiers/")
+table.dir <- paste0(data.root, "Figure1/combined/tiers/")
+samples   <- c("Invitro", "W2", "Pacute", "D195")
+# DEG call thresholds, as in the tier_deg chunk that wrote the tables
+fc_threshold   <- 0.5
+pval_threshold <- 0.01
+reference_contrasts <- c(GEX_vs_neg = "TenX-positive", Both_vs_neg = "both")
+tiers_all <- read_tier_tables(table.dir, samples)
+
+tier_is_significant <- function(padj, log2FC) padj < pval_threshold & abs(log2FC) > fc_threshold
+
+tier_concordance_one <- function(sample_name, reference_contrast) {
+  reference_label <- reference_contrasts[[reference_contrast]]
+  tenx   <- tier_read_deg(deg.dir, sample_name, "all", reference_contrast)
+  care  <- tier_read_deg(deg.dir, sample_name, "all", "CaReOnly_vs_neg")
+  naive <- if (reference_contrast == "GEX_vs_neg") {
+    tier_read_deg(deg.dir, sample_name, "all", "GEX_naive")
+  } else NULL
+  if (is.null(tenx) || is.null(care)) {
+    cat("Skipping", sample_name, "-", reference_contrast,
+        "or CaReOnly_vs_neg not tested\n")
+    return(NULL)
+  }
+
+  genes <- inner_join(
+    tenx  %>% select(gene, gex_log2FC  = avg_log2FC, gex_padj  = p_val_adj),
+    care %>% select(gene, care_log2FC = avg_log2FC, care_padj = p_val_adj),
+    by = "gene") %>%
+    mutate(gex_sig   = tier_is_significant(gex_padj, gex_log2FC),
+           care_sig  = tier_is_significant(care_padj, care_log2FC),
+           same_sign = sign(gex_log2FC) == sign(care_log2FC),
+           class = case_when(gex_sig & care_sig & same_sign ~ "shared",
+                             gex_sig & care_sig             ~ "discordant",
+                             gex_sig                        ~ "GEX only",
+                             care_sig                       ~ "Ca*Re-added only",
+                             TRUE                           ~ "ns"))
+
+  downsampled_file <- paste0(deg.dir, sample_name, "_CaReOnly_vs_neg_downsampled.csv")
+  genes$fraction_significant_matched_n <- if (file.exists(downsampled_file)) {
+    downsampled <- read.csv(downsampled_file)
+    downsampled$fraction_significant[match(genes$gene, downsampled$gene)]
+  } else NA_real_
+
+  tests <- read.csv(paste0(deg.dir, sample_name, "_tests.csv"))
+  untestable_clusters <- tests %>%
+    filter(scope != "all", contrast %in% c(reference_contrast, "CaReOnly_vs_neg")) %>%
+    select(scope, contrast, tested) %>%
+    tidyr::pivot_wider(names_from = contrast, values_from = tested) %>%
+    filter(!.data[[reference_contrast]], CaReOnly_vs_neg) %>%
+    pull(scope)
+  cluster_hits <- unique(unlist(lapply(untestable_clusters, function(scope) {
+    deg <- tier_read_deg(deg.dir, sample_name, scope, "CaReOnly_vs_neg")
+    deg$gene[tier_is_significant(deg$p_val_adj, deg$avg_log2FC)]
+  })))
+  genes$in_GEX_untestable_cluster <- genes$gene %in% cluster_hits
+
+  if (!is.null(naive)) {
+    genes <- genes %>%
+      left_join(naive %>% select(gene, naive_log2FC = avg_log2FC), by = "gene")
+  } else genes$naive_log2FC <- NA_real_
+
+  write.csv(genes, paste0(deg.dir, sample_name, "_", reference_contrast,
+                          "_gene_classes.csv"), row.names = FALSE)
+
+  tenx_deg <- genes %>% filter(gex_sig)
+  diluted <- tenx_deg %>% filter(!is.na(naive_log2FC))
+  care_added <- genes %>% filter(class == "Ca*Re-added only")
+
+  tibble(
+    sample = sample_name,
+    reference = reference_contrast,
+    n_genes_tested   = nrow(genes),
+    spearman_log2FC  = cor(genes$gex_log2FC, genes$care_log2FC, method = "spearman"),
+    n_GEX_DEG        = nrow(tenx_deg),
+    n_CaRe_only_DEG  = sum(genes$care_sig),
+    n_shared         = sum(genes$class == "shared"),
+    n_discordant     = sum(genes$class == "discordant"),
+    n_GEX_only       = sum(genes$class == "GEX only"),
+    n_CaRe_added_only  = nrow(care_added),
+    pct_TenX_DEG_same_sign = if (nrow(tenx_deg) > 0)
+      round(100 * mean(tenx_deg$same_sign), 1) else NA_real_,
+    p_same_sign_binomial = if (nrow(tenx_deg) > 0)
+      binom.test(sum(tenx_deg$same_sign), nrow(tenx_deg), 0.5)$p.value else NA_real_,
+    median_naive_over_clean_abs_log2FC = if (nrow(diluted) > 0)
+      median(abs(diluted$naive_log2FC) / abs(diluted$gex_log2FC)) else NA_real_,
+    p_naive_vs_clean_wilcoxon = if (nrow(diluted) > 1) tier_safe_p(
+      wilcox.test(abs(diluted$naive_log2FC), abs(diluted$gex_log2FC),
+                  paired = TRUE)$p.value) else NA_real_,
+    n_CaRe_added_only_held_at_matched_n =
+      sum(care_added$fraction_significant_matched_n >= 0.5, na.rm = TRUE),
+    n_CaRe_added_only_in_TenX_untestable_cluster =
+      sum(care_added$in_GEX_untestable_cluster),
+    TenX_untestable_clusters = paste(untestable_clusters, collapse = ","),
+    n_genes_significant_in_TenX_untestable_clusters = length(cluster_hits))
+}
+
+tier_concordance <- purrr::map_dfr(names(reference_contrasts), function(reference_contrast) {
+  purrr::map_dfr(names(tiers_all), tier_concordance_one,
+                 reference_contrast = reference_contrast)
+})
+
+cat("=== TenX reference vs Ca*Re-only DEG concordance (whole sample, matched negatives) ===\n")
+print(as.data.frame(tier_concordance))
+```
+
+### Panel E: viral load as two groups
+
+Also prints the in-text yield comparison: the Ca*Re positives of
+`tier_binload_downsample` thinned to the number of cells its TenX arm calls, with
+the same Wilcoxon re-run over `tier_binload_ndraw` draws
+
+Writes `PanelE_loadState_binary_hallmark_lines.pdf`.
+Prerequisites: the `pathway screen` chunk, for `<sample>_pathway_scores.csv`.
+```{r tier_binary_load}
+tier_binload.dir  <- paste0(data.root, "Figure1/combined/tiers/")
+tier_binload_min  <- 10          # minimum cells in a load group before it is tested
+tier_binload_out  <- paste0(plot.root, "Figure3/")
+tier_binload_cut  <- 8
+tier_binload_samples <- c("Invitro", "Pacute", "W2", "D195")
+tier_binload_sets <- c("OXIDATIVE_PHOSPHORYLATION", "GLYCOLYSIS", "MTORC1_SIGNALING",
+                       "INTERFERON_GAMMA_RESPONSE", "TNFA_SIGNALING_VIA_NFKB",
+                       "INFLAMMATORY_RESPONSE")
+tier_binload_labels <- c(OXIDATIVE_PHOSPHORYLATION = "OxPhos", GLYCOLYSIS = "Glycolysis",
+                         MTORC1_SIGNALING = "mTORC1",
+                         INTERFERON_GAMMA_RESPONSE = "IFN\u03b3",
+                         TNFA_SIGNALING_VIA_NFKB = "TNF\u03b1/NF\u03baB",
+                         INFLAMMATORY_RESPONSE = "Inflammatory")
+# Facet strips are plotmath rather than the Unicode labels above: the figure is
+# written on the default pdf device for Helvetica, and that device's Latin-1
+# encoding carries no Greek. plotmath takes the Greek from the Symbol font.
+tier_binload_plotmath <- c(OXIDATIVE_PHOSPHORYLATION = '"OxPhos"',
+                           GLYCOLYSIS = '"Glycolysis"',
+                           MTORC1_SIGNALING = '"mTORC1"',
+                           INTERFERON_GAMMA_RESPONSE = '"IFN"*gamma',
+                           TNFA_SIGNALING_VIA_NFKB = '"TNF"*alpha*"/NF"*kappa*"B"',
+                           INFLAMMATORY_RESPONSE = '"Inflammatory"')
+tier_binload_pal <- c(Invitro = "#594A42", W2 = "#EE2A7B",
+                      Pacute = "#DB73AD", D195 = "#A97C50")
+# Samples are named for the condition they represent rather than the library, so
+# the legend reads as the biology. Drawn in this order.
+tier_binload_legend <- c(Invitro = "*in vitro*", W2 = "*in vivo* (W2)",
+                         Pacute = "*in vivo* (Pacute)", D195 = "ART")
+# The legend carries no key glyphs: each label is drawn in its series colour, so
+# the colour is read off the word itself.
+tier_binload_md <- function(s) {
+  paste0("<span style='color:", tier_binload_pal[s], "'>", tier_binload_legend[s], "</span>")
+}
+
+tier_binload_scores <- bind_rows(lapply(tier_binload_samples, function(s) {
+  f <- paste0(tier_binload.dir, s, "_pathway_scores.csv")
+  if (!check_migrated(f)) return(NULL)
+  read.csv(f) %>% mutate(sample = s)
+})) %>%
+  filter(tier %in% c("both", "CaRe_only", "neg")) %>%
+  mutate(sample = factor(sample, tier_binload_samples),
+         load = ifelse(tier == "neg", "uninfected",
+                       ifelse(care_UMIs < tier_binload_cut,
+                              paste0("2-", tier_binload_cut - 1),
+                              paste0(tier_binload_cut, "+"))))
+
+# Wilcoxon of each load group against that sample's uninfected cells, BH across
+# the sample x set x group grid.
+tier_binload_stats <- bind_rows(lapply(tier_binload_samples, function(s)
+  bind_rows(lapply(intersect(tier_binload_sets, colnames(tier_binload_scores)), function(st) {
+    q <- tier_binload_scores %>% filter(sample == s)
+    ref <- q[[st]][q$load == "uninfected"]
+    bind_rows(lapply(setdiff(unique(q$load), "uninfected"), function(gr) {
+      x <- q[[st]][q$load == gr]
+      if (length(x) < tier_binload_min) return(NULL)
+      data.frame(sample = s, set = st, load = gr, n = length(x),
+                 delta = mean(x) - mean(ref),
+                 p = suppressWarnings(wilcox.test(x, ref)$p.value))
+    }))
+  })))) %>%
+  mutate(padj = p.adjust(p, "BH"),
+         set_expr = factor(tier_binload_plotmath[set],
+                           levels = unname(tier_binload_plotmath)),
+         set = factor(tier_binload_labels[set], levels = unname(tier_binload_labels)),
+         load = factor(load, c(paste0("2-", tier_binload_cut - 1),
+                               paste0(tier_binload_cut, "+"))),
+         sample = factor(sample, tier_binload_samples))
+
+cat("\n=== Hallmark module score by binary viral load, vs uninfected ===\n")
+print(as.data.frame(tier_binload_stats %>%
+  mutate(delta = round(delta, 3), padj = signif(padj, 2)) %>%
+  select(sample, set, load, n, delta, padj) %>% arrange(set, sample, load)))
+
+# --- In text: would 10X's cell yield have found the same shift? ---------------
+# The TenX arm of `tier_binload_downsample` calls too few cells to test, and the
+# ones it calls are GEX_only, a tier this chunk does not score, so they cannot be
+# tested directly. The yield question is answered instead by thinning the Ca*Re
+# positives to the TenX arm's cell count and re-running the identical Wilcoxon, so
+# the only thing that changes between the two is how many cells the comparison
+# has. Draws are taken before anything that reseeds the RNG.
+tier_binload_downsample <- "D195"
+tier_binload_ndraw      <- 2000
+tier_binload_n_tenx <- sum(read.csv(paste0(tier_binload.dir, tier_binload_downsample,
+                                          "_tiers.csv"))$tier %in% c("both", "GEX_only"))
+tier_binload_q   <- tier_binload_scores %>% filter(sample == tier_binload_downsample)
+tier_binload_pos <- tier_binload_q %>% filter(tier != "neg")
+tier_binload_ref <- tier_binload_q %>% filter(tier == "neg")
+
+# Every draw is tested against the same uninfected cells, so each positive
+# cell's contribution to the Mann-Whitney U is counted once here and summed per
+# draw, rather than calling wilcox.test for every draw x set. The module scores
+# carry no ties, so wilcox.test takes the normal approximation with a continuity
+# correction, which the p below reproduces exactly.
+tier_binload_posm <- as.matrix(tier_binload_pos[, tier_binload_sets])
+tier_binload_nref <- nrow(tier_binload_ref)
+tier_binload_u <- vapply(tier_binload_sets, function(st) {
+  reference <- sort(tier_binload_ref[[st]])
+  below <- findInterval(tier_binload_posm[, st], reference, left.open = TRUE)
+  below + 0.5 * (findInterval(tier_binload_posm[, st], reference) - below)
+}, numeric(nrow(tier_binload_posm)))
+
+tier_binload_bh <- function(rows) {
+  n_pos  <- length(rows)
+  u      <- colSums(tier_binload_u[rows, , drop = FALSE])
+  centre <- n_pos * tier_binload_nref / 2
+  spread <- sqrt(n_pos * tier_binload_nref * (n_pos + tier_binload_nref + 1) / 12)
+  p.adjust(2 * pnorm(-abs((u - centre - sign(u - centre) * 0.5) / spread)), "BH")
+}
+tier_binload_full <- tier_binload_bh(seq_len(nrow(tier_binload_posm)))
+set.seed(1)
+tier_binload_draws <- t(vapply(
+  replicate(tier_binload_ndraw,
+            sample.int(nrow(tier_binload_posm), tier_binload_n_tenx), simplify = FALSE),
+  tier_binload_bh, numeric(length(tier_binload_sets))))
+colnames(tier_binload_draws) <- tier_binload_sets
+
+cat("\n=== ", tier_binload_downsample, ": Ca*Re cells thinned to the TenX arm's yield (",
+    tier_binload_n_tenx, " cells), ", tier_binload_ndraw, " draws ===\n", sep = "")
+print(as.data.frame(tibble(
+  set = unname(tier_binload_labels[tier_binload_sets]),
+  full_arm_padj = signif(tier_binload_full, 2),
+  median_padj   = signif(apply(tier_binload_draws, 2, median), 2),
+  pct_draws_padj_lt_0.05 = round(100 * colMeans(tier_binload_draws < 0.05), 1))),
+  row.names = FALSE)
+cat("-> downsampling the Ca*Re-detected cells to the ", tier_binload_n_tenx,
+    " cells 10X detected recovers the OxPhos shift in ",
+    round(100 * mean(tier_binload_draws[, "OXIDATIVE_PHOSPHORYLATION"] < 0.05), 1),
+    "% of draws (full arm: n = ", nrow(tier_binload_pos), ", BH p = ",
+    signif(tier_binload_full[["OXIDATIVE_PHOSPHORYLATION"]], 2), ")\n", sep = "")
+
+tier_binload_plot <- ggplot(tier_binload_stats,
+                            aes(load, delta, color = sample, group = sample)) +
+  geom_hline(yintercept = 0, linewidth = 0.3) +
+  geom_line(linewidth = 1) +
+  geom_point(aes(size = ifelse(padj < 0.05, "padj<0.05", "ns"))) +
+  facet_wrap(~ set_expr, nrow = 2, scales = "free_y", labeller = label_parsed) +
+  scale_color_manual(values = tier_binload_pal, name = NULL,
+                     breaks = names(tier_binload_legend),
+                     labels = tier_binload_md(names(tier_binload_legend))) +
+  scale_size_manual(values = c(`padj<0.05` = 3.4, ns = 1.4), name = NULL) +
+  guides(color = guide_legend(order = 1,
+                              override.aes = list(linewidth = 0, size = 0, stroke = 0)),
+         size  = guide_legend(order = 2)) +
+  labs(x = "Ca*Re viral UMIs per cell", y = "module score vs uninfected") +
+  theme_classic(base_size = 13, base_family = "Helvetica") +
+  theme(strip.background = element_blank(),
+        strip.text = element_text(size = rel(1.05)),
+        axis.text = element_text(color = "black"),
+        axis.title = element_text(size = rel(0.95)),
+        legend.position = "bottom",
+        legend.text = ggtext::element_markdown(size = rel(0.85),
+                                               family = "Helvetica"),
+        legend.key.spacing.x = unit(0.2, "cm"),
+        legend.margin = margin(t = -4))
+# The default pdf device, not cairo_pdf. Helvetica is one of the base-14 PDF
+# fonts, so it is written by name instead of embedded, and Arial stands in for it
+# on opening: the two share metrics, and no Arial is installed here for any
+# device to use. cairo_pdf resolves the family through fontconfig, which holds
+# neither, and would silently fall back to DejaVu Sans. The Greek in the facet
+# strips survives because they are plotmath, drawn from the Symbol font.
+ggsave(paste0(tier_binload_out, "PanelE_loadState_binary_hallmark_lines.pdf"),
+       tier_binload_plot, width = 9, height = 6,
+       device = grDevices::pdf, family = "Helvetica")
+print(tier_binload_plot)
+```
+
+### Print: load vs pathway genes
+
+Supports Fig 3E in-text statements
+
+Prerequisites: the `tier_tables` chunk. Loads each per-sample Seurat RDS, so run
+it on a compute node (srun, genomics partition).
+```{r tier_load_genes}
+loadgene_rds.dir   <- paste0(data.root, "Figure1/singleCell/Seurat/RDS/")
+loadgene_table.dir <- paste0(data.root, "Figure1/combined/tiers/")
+loadgene_out.dir   <- paste0(loadgene_table.dir, "load_genes/")
+dir.create(loadgene_out.dir, recursive = TRUE, showWarnings = FALSE)
+
+loadgene_samples <- c("Invitro", "W2", "Pacute", "D195")
+# The Panel C split, so the two analyses describe the same groups
+loadgene_cut <- 8
+loadgene_min_detected <- 0.05
+loadgene_min_cells    <- 10
+loadgene_fc    <- 0.5
+loadgene_padj  <- 0.01
+loadgene_n_random  <- 2000
+loadgene_expr_bins <- 10
+loadgene_sets <- c("OXIDATIVE_PHOSPHORYLATION", "GLYCOLYSIS", "MTORC1_SIGNALING",
+                   "INTERFERON_GAMMA_RESPONSE", "TNFA_SIGNALING_VIA_NFKB",
+                   "INFLAMMATORY_RESPONSE")
+loadgene_hallmark <- hallmark_gene_sets()
+stopifnot(all(loadgene_sets %in% names(loadgene_hallmark)))
+
+# Share of draws whose fraction_down reaches the set's, where a draw holds as
+# many genes as the set does in each expression decile
+loadgene_null_p <- function(log2FC, expression_bin, set_genes, seed = 1) {
+  observed <- mean(log2FC[set_genes] < 0)
+  wanted <- table(expression_bin[set_genes])
+  pools  <- split(which(!set_genes), expression_bin[!set_genes])
+  set.seed(seed)
+  draws <- replicate(loadgene_n_random, {
+    picked <- unlist(mapply(function(pool, n) pool[sample.int(length(pool), min(length(pool), n))],
+                            pools[names(wanted)], wanted, SIMPLIFY = FALSE), use.names = FALSE)
+    mean(log2FC[picked] < 0)
+  })
+  list(observed = observed, null_mean = mean(draws),
+       p = (sum(draws >= observed) + 1) / (loadgene_n_random + 1))
+}
+
+loadgene_breadth <- list(); loadgene_core <- list()
+for (sample_name in loadgene_samples) {
+  seurat_file <- paste0(loadgene_rds.dir, sample_name, ".rds")
+  tiers_file  <- paste0(loadgene_table.dir, sample_name, "_tiers.csv")
+  if (!check_migrated(seurat_file) || !file.exists(tiers_file)) next
+  tiers <- read.csv(tiers_file) %>% mutate(cellID = as.character(cellID)) %>%
+    filter(tier %in% c("both", "CaRe_only", "neg"))
+  obj <- readRDS(seurat_file)
+  DefaultAssay(obj) <- "RNA"
+  obj <- JoinLayers(obj, assay = "RNA")
+  tiers <- tiers %>% filter(cellID %in% colnames(obj))
+  obj <- subset(obj, cells = tiers$cellID)
+
+  groups <- list(
+    low  = tiers$cellID[tiers$tier != "neg" & tiers$care_UMIs <  loadgene_cut],
+    high = tiers$cellID[tiers$tier != "neg" & tiers$care_UMIs >= loadgene_cut],
+    uninfected = tiers$cellID[tiers$tier == "neg"])
+
+  counts <- GetAssayData(obj, assay = "RNA", layer = "counts")
+  universe <- names(which(Matrix::rowMeans(counts > 0) >= loadgene_min_detected))
+  expression <- Matrix::rowMeans(GetAssayData(obj, assay = "RNA", layer = "data")[universe, ])
+  expression_bin <- cut(expression, unique(quantile(expression,
+                        seq(0, 1, length.out = loadgene_expr_bins + 1))), include.lowest = TRUE)
+  cat("\n", sample_name, ": universe", length(universe), "genes | low",
+      length(groups$low), "| high", length(groups$high), "| uninfected",
+      length(groups$uninfected), "\n")
+
+  contrasts <- list(low_vs_uninfected  = c("low", "uninfected"),
+                    high_vs_uninfected = c("high", "uninfected"),
+                    high_vs_low        = c("high", "low"))
+  for (contrast_name in names(contrasts)) {
+    pair <- contrasts[[contrast_name]]
+    if (min(lengths(groups[pair])) < loadgene_min_cells) {
+      cat("  skipping", contrast_name, "- fewer than", loadgene_min_cells, "cells\n"); next
+    }
+    deg <- FindMarkers(obj, ident.1 = groups[[pair[1]]], ident.2 = groups[[pair[2]]],
+                       features = universe, assay = "RNA", test.use = "wilcox",
+                       logfc.threshold = 0, min.pct = 0, verbose = FALSE)
+    deg$gene <- rownames(deg)
+    write.csv(deg, paste0(loadgene_out.dir, sample_name, "_load_", contrast_name,
+                          "_genes.csv"), row.names = FALSE)
+    log2FC <- setNames(deg$avg_log2FC, deg$gene)[universe]
+    padj   <- setNames(deg$p_val_adj,  deg$gene)[universe]
+
+    for (set_name in loadgene_sets) {
+      set_genes <- universe %in% loadgene_hallmark[[set_name]]
+      if (sum(set_genes) < 10) next
+      null <- loadgene_null_p(log2FC, expression_bin, set_genes)
+      loadgene_breadth[[length(loadgene_breadth) + 1]] <- tibble(
+        sample = sample_name, contrast = contrast_name, set = set_name,
+        n_genes = sum(set_genes),
+        fraction_down = round(null$observed, 3),
+        fraction_down_null = round(null$null_mean, 3),
+        mean_log2FC = round(mean(log2FC[set_genes]), 4),
+        mean_pct_per_gene = round(100 * (2^mean(log2FC[set_genes]) - 1), 2),
+        p_empirical = null$p)
+      core <- which(set_genes & padj < loadgene_padj & abs(log2FC) > loadgene_fc)
+      loadgene_core[[length(loadgene_core) + 1]] <- tibble(
+        sample = sample_name, contrast = contrast_name, set = set_name,
+        n_core = length(core),
+        genes = paste(universe[core][order(-abs(log2FC[core]))], collapse = ";"))
+    }
+  }
+  rm(obj, counts); gc()
+}
+
+loadgene_breadth <- bind_rows(loadgene_breadth) %>%
+  mutate(p_adj = signif(p.adjust(p_empirical, "BH"), 2))
+loadgene_core <- bind_rows(loadgene_core)
+write.csv(loadgene_breadth, paste0(loadgene_out.dir, "load_gene_breadth.csv"), row.names = FALSE)
+write.csv(loadgene_core,    paste0(loadgene_out.dir, "load_gene_core.csv"),    row.names = FALSE)
+
+# The full grids stay in the two CSVs above; what prints is only the three
+# quantities the Fig 3E text quotes.
+
+cat("\n=== 1. Oxidative phosphorylation: share of genes down vs uninfected ===\n")
+print(as.data.frame(loadgene_breadth %>%
+  filter(set == "OXIDATIVE_PHOSPHORYLATION", contrast != "high_vs_low") %>%
+  transmute(load = sub("_vs_uninfected", "", contrast), sample, n_genes,
+            pct_down      = round(100 * fraction_down),
+            pct_down_null = round(100 * fraction_down_null),
+            pct_per_gene  = mean_pct_per_gene, p_adj) %>%
+  arrange(load, sample)), row.names = FALSE)
+
+cat("\n=== 2. Other sets reduced at low load (FDR < 0.05, above the null) ===\n")
+print(as.data.frame(loadgene_breadth %>%
+  filter(set != "OXIDATIVE_PHOSPHORYLATION", contrast == "low_vs_uninfected",
+         p_adj < 0.05, fraction_down > fraction_down_null) %>%
+  transmute(set, sample, n_genes,
+            pct_down      = round(100 * fraction_down),
+            pct_down_null = round(100 * fraction_down_null), p_adj) %>%
+  arrange(set, sample)), row.names = FALSE)
+
+# The text's core set is the genes that pass the DEG call against uninfected
+# cells AND against the low-load cells, so a gene called against only one of the
+# two references does not count.
+loadgene_inflammatory <- c("TNFA_SIGNALING_VIA_NFKB", "INFLAMMATORY_RESPONSE")
+loadgene_high_core <- loadgene_core %>%
+  filter(set %in% loadgene_inflammatory, n_core > 0,
+         contrast %in% c("high_vs_uninfected", "high_vs_low")) %>%
+  mutate(gene = strsplit(genes, ";")) %>%
+  tidyr::unnest(gene) %>%
+  group_by(sample, gene) %>%
+  summarize(n_contrasts = n_distinct(contrast), .groups = "drop") %>%
+  filter(n_contrasts == 2)
+
+cat("\n=== 3. High-load core: inflammatory and TNFA genes passing against both",
+    "low load and uninfected ===\n")
+print(as.data.frame(
+  tibble(sample = intersect(loadgene_samples, unique(loadgene_core$sample))) %>%
+    left_join(loadgene_high_core %>% group_by(sample) %>%
+                summarize(n_core = n(), genes = paste(sort(gene), collapse = ", "),
+                          .groups = "drop"),
+              by = "sample") %>%
+    mutate(n_core = coalesce(n_core, 0L), genes = coalesce(genes, "(none)"))),
+  row.names = FALSE)
+```
+
+
+### cNMF programs
+Pattern usage per tier on the cleaned cNMF runs of Panels E and F: TenX-positive
+vs uninfected, both vs uninfected and Ca*Re-only vs uninfected, each by
+`compare_pattern_usage` (Wilcoxon, BH across the patterns of a contrast). The two
+single-chemistry contrasts are also drawn as a supplemental barplot,
+`cNMF_tier_program_enrichment.pdf`, which asks what the cells each chemistry
+calls contribute in program space.
+
+Ca*Re-only vs TenX-positive is not among the contrasts. Those two groups differ
+mainly in viral burden, so the comparison restates the Panel C load contrast,
+which tests it directly and on a cut point set from the burden distribution.
+
+Host library size is neither regressed out nor matched on here: the gap in it
+between infected and uninfected cells is a property of infected cells rather than
+a detection artifact, so removing it would take real signal with it
+(SuppFigs.Rmd, `suppfig3_depth_confounding`).
+Negatives are all `neg` CD4 T cells in the cNMF run, unmatched.
+Prerequisites: the `tier_tables` chunk and the cleaned cNMF usage tables.
+```{r tier_cnmf}
+table.dir <- paste0(data.root, "Figure1/combined/tiers/")
+supp.dir  <- paste0(plot.root, "Supplemental/SuppFig3/")
+dir.create(supp.dir, recursive = TRUE, showWarnings = FALSE)
+
+tenx_positive_tiers <- c("both", "GEX_only")
+tier_cnmf_samples  <- c("Invitro", "W2", "Pacute")
+tiers_all <- read_tier_tables(table.dir, tier_cnmf_samples)
+
+# The two contrasts the supplemental barplot draws, in plotting order
+tier_cnmf_panel_contrasts <- c("TenX-positive vs uninfected",
+                               "Ca*Re-only vs uninfected")
+tier_cnmf_colors <- c(`GEX-positive vs uninfected` = "#2B3990",
+                      `Ca*Re-only vs uninfected`   = "#00AEEF")
+# Each contrast is run against every uninfected cell and against uninfected
+# cells matched on host library size decile, drawn as the two rows of the panel
+tier_cnmf_references <- c("all uninfected cells", "host size decile matched")
+tier_cnmf_call_padj  <- 0.05
+
+# `prefix` is the tag the joint run puts on its cell IDs, stripped to recover the
+# barcode the tier tables carry.
+integrated_usage <- paste0(data.root, "Figure1/",
+                           "combined/cNMF/subpattern/Pacute_W2_integrated_usage_K6.csv")
+tier_cnmf <- list(
+  Invitro = list(usage_file = paste0(data.root,
+                                     "Figure1/singleCell/cNMF/subpattern/",
+                                     "Invitro_cleaned_usage_K5.csv"),
+                 prefix = NULL, labels = cnmf_metaprogram_labels$Invitro),
+  W2      = list(usage_file = integrated_usage, prefix = "W2_",
+                 labels = cnmf_integrated_metaprogram_labels),
+  Pacute  = list(usage_file = integrated_usage, prefix = "Pacute_",
+                 labels = cnmf_integrated_metaprogram_labels))
+
+tier_cnmf_enrichment <- purrr::map_dfr(tier_cnmf_samples, function(sample_name) {
+  cfg <- tier_cnmf[[sample_name]]
+  if (!check_migrated(cfg$usage_file)) return(NULL)
+  usage <- read.csv(cfg$usage_file, row.names = 1, check.names = FALSE)
+  if (!is.null(cfg$prefix)) {
+    usage <- usage[grepl(paste0("^", cfg$prefix), rownames(usage)), , drop = FALSE]
+    rownames(usage) <- sub(paste0("^", cfg$prefix), "", rownames(usage))
+  }
+  tiers <- tiers_all[[sample_name]] %>% filter(cellID %in% rownames(usage))
+  host_size <- setNames(tiers$size, tiers$cellID)
+
+  tenx_positive <- tiers$cellID[tiers$tier %in% tenx_positive_tiers]
+  called_both  <- tiers$cellID[tiers$tier == "both"]
+  care_only    <- tiers$cellID[tiers$tier == "CaRe_only"]
+  negative     <- tiers$cellID[tiers$tier == "neg"]
+
+  tier_pairs <- list(
+    list(label = "TenX-positive vs uninfected", cells = list(tenx_positive, negative),
+         labels = c("TenX_positive", "neg")),
+    list(label = "both vs uninfected",         cells = list(called_both, negative),
+         labels = c("both", "neg")),
+    list(label = "Ca*Re-only vs uninfected",   cells = list(care_only, negative),
+         labels = c("CaRe_only", "neg")))
+
+  purrr::map_dfr(tier_pairs, function(pair) {
+    if (min(lengths(pair$cells)) < 3) {
+      cat("Skipping", sample_name, pair$label, "- fewer than 3 cells\n")
+      return(NULL)
+    }
+    comparisons <- list(
+      compare_pattern_usage(usage, pair$cells[[1]], pair$cells[[2]],
+                            group_labels = pair$labels),
+      compare_pattern_usage_matched(usage, pair$cells[[1]], pair$cells[[2]],
+                                    match_values = host_size,
+                                    group_labels = pair$labels))
+    purrr::map2_dfr(comparisons, tier_cnmf_references, function(comparison, reference) {
+      result <- merge(comparison$comparison,
+                      comparison$stats[, c("pattern", "p_adj")], by = "pattern")
+      cat("\n", sample_name, pair$label, "|", reference, "(",
+          nrow(comparison$group1_patterns), "vs",
+          nrow(comparison$group2_patterns), "cells )\n")
+      print(result)
+      result %>%
+        transmute(sample = sample_name, contrast = pair$label, reference, pattern,
+                  program = cfg$labels[pattern],
+                  n_positive  = nrow(comparison$group1_patterns),
+                  n_reference = nrow(comparison$group2_patterns),
+                  log2_fold_change, p_adj)
+    })
+  })
+})
+
+# Programs are ordered by metaprogram number, which is shared across the runs, so
+# every facet reads left to right on the same axis.
+tier_cnmf_plot_data <- tier_cnmf_enrichment %>%
+  filter(contrast %in% tier_cnmf_panel_contrasts,
+         !grepl("contaminant|contamination", program, ignore.case = TRUE)) %>%
+  mutate(sample      = factor(sample, levels = tier_cnmf_samples),
+         contrast    = factor(contrast, levels = tier_cnmf_panel_contrasts),
+         reference   = factor(reference, levels = tier_cnmf_references),
+         significant = p_adj < tier_cnmf_call_padj,
+         label_y     = log2_fold_change + sign(log2_fold_change) * 0.07)
+tier_cnmf_plot_data$program <- factor(
+  tier_cnmf_plot_data$program,
+  levels = unique(tier_cnmf_plot_data$program[
+    order(as.numeric(sub("^M([0-9]+).*", "\\1", tier_cnmf_plot_data$program)))]))
+
+tier_cnmf_panel <- ggplot(tier_cnmf_plot_data,
+                          aes(program, log2_fold_change, fill = contrast)) +
+  geom_hline(yintercept = 0, linewidth = 0.3) +
+  geom_col(position = position_dodge(width = 0.75), width = 0.7) +
+  geom_text(aes(y = label_y, label = ifelse(significant, "*", "ns")),
+            position = position_dodge(width = 0.75), size = 2.4, vjust = 0.5) +
+  facet_grid(reference ~ sample, scales = "free_x", space = "free_x") +
+  scale_fill_manual(values = tier_cnmf_colors, name = NULL) +
+  labs(x = NULL, y = "log2 fold change in mean program usage",
+       caption = paste0("Wilcoxon, BH across the patterns of a contrast; * padj < ",
+                        tier_cnmf_call_padj,
+                        ". Pacute and W2 share one joint cNMF run; Invitro has its own.")) +
+  theme_classic() +
+  theme(strip.background = element_blank(),
+        axis.text.x = element_text(angle = 40, hjust = 1),
+        legend.position = "bottom")
+
+ggsave(paste0(supp.dir, "cNMF_tier_program_enrichment.pdf"),
+       tier_cnmf_panel, width = 11, height = 7)
+print(tier_cnmf_panel)
+
+cat("\n=== Programs moved per contrast (padj <", tier_cnmf_call_padj, ") ===\n")
+print(as.data.frame(tier_cnmf_plot_data %>%
+  group_by(sample, reference, contrast) %>%
+  summarize(n_programs = n(), n_significant = sum(significant),
+            max_abs_log2FC = round(max(abs(log2_fold_change)), 2),
+            .groups = "drop")), row.names = FALSE)
+
+cat("\n=== M1 resting/memory, the contrast the two chemistries disagree on ===\n")
+print(as.data.frame(tier_cnmf_plot_data %>%
+  filter(grepl("^M1 ", program)) %>%
+  transmute(sample, reference, contrast, n_positive,
+            log2_fold_change = round(log2_fold_change, 3),
+            p_adj = signif(p_adj, 2)) %>%
+  arrange(sample, reference, contrast)), row.names = FALSE)
+```
+
+
+### Program usage across the viral load range and by infected-population definition
+What every cNMF program does across the viral load spectrum, which the Panel E
+load-state analysis asks of the Hallmark sets. Three framings, because the answer
+depends on which infected cells an assay samples:
+
+  - five load bins, which show the shape of the gradient
+  - four definitions of the infected population: every Ca*Re-called cell, the
+    low and high halves of the 8 UMI split, and the cells the 10X arm calls.
+    Methods that isolate infected cells on proviral DNA mix silent, low- and
+    high-transcribing cells, so the pooled Ca*Re arm rather than either half is
+    the comparable population.
+  - Spearman of usage against load among virus-transcribing cells, and a
+    bootstrap confidence interval on each population's log2 fold change, so that
+    a difference which does not reach significance is reported as a bounded
+    interval rather than as an absence
+
+W2 and Pacute read from the joint cNMF run, which puts them on identical
+programs; Invitro and D195 have their own runs. Contaminant programs carry no
+claim about infected-cell state and are dropped.
+
+Writes `SuppFig3_cnmf_loadBins.csv`, `SuppFig3_cnmf_populations.csv`,
+`SuppFig3_cnmf_loadCorrelation.csv` and `SuppFig3_cnmf_bootstrapCI.csv`.
+Prerequisites: the `tier_tables` chunk and the cleaned cNMF usage tables. Reads
+those tables only, so it does not need a compute node.
+```{r suppfig3_cnmf_load_populations}
+cnmfload_table.dir  <- paste0(data.root, "Figure1/combined/tiers/")
+cnmfload_output.dir <- paste0(plot.root, "Supplemental/SuppFig3/")
+dir.create(cnmfload_output.dir, recursive = TRUE, showWarnings = FALSE)
+
+cnmfload_samples    <- c("Invitro", "W2", "Pacute", "D195")
+# The Panel C/E split, so this analysis describes the same load groups
+cnmfload_cut        <- 8
+cnmfload_breaks     <- c(0, 3, 7, 15, 31, Inf)
+cnmfload_bin_labels <- c("2-3", "4-7", "8-15", "16-31", "32+")
+cnmfload_min_cells  <- 10
+cnmfload_n_boot     <- 10000
+cnmfload_population_levels <- c("all Ca*Re", "low (2-7)", "high (8+)", "10X-called")
+
+cnmfload_integrated <- paste0(data.root, "Figure1/",
+                              "combined/cNMF/subpattern/Pacute_W2_integrated_usage_K6.csv")
+cnmfload_usage <- list(
+  Invitro = list(file = paste0(data.root, "Figure1/",
+                               "singleCell/cNMF/subpattern/Invitro_cleaned_usage_K5.csv"),
+                 prefix = NULL, labels = cnmf_metaprogram_labels$Invitro),
+  W2      = list(file = cnmfload_integrated, prefix = "W2_",
+                 labels = cnmf_integrated_metaprogram_labels),
+  Pacute  = list(file = cnmfload_integrated, prefix = "Pacute_",
+                 labels = cnmf_integrated_metaprogram_labels),
+  D195    = list(file = paste0(data.root, "Figure1/",
+                               "singleCell/cNMF/subpattern/D195_cleaned_usage_K6.csv"),
+                 prefix = NULL, labels = cnmf_metaprogram_labels$D195))
+
+cnmfload_tiers <- read_tier_tables(cnmfload_table.dir, cnmfload_samples)
+
+# Usage table for one sample, with the joint run's cell ID tag stripped
+cnmfload_read <- function(cfg) {
+  if (!file.exists(cfg$file)) return(NULL)
+  usage <- read.csv(cfg$file, row.names = 1, check.names = FALSE)
+  if (!is.null(cfg$prefix)) {
+    usage <- usage[grepl(paste0("^", cfg$prefix), rownames(usage)), , drop = FALSE]
+    rownames(usage) <- sub(paste0("^", cfg$prefix), "", rownames(usage))
+  }
+  usage
+}
+
+cnmfload_cells <- purrr::map_dfr(cnmfload_samples, function(sample_name) {
+  cfg <- cnmfload_usage[[sample_name]]
+  usage <- cnmfload_read(cfg)
+  if (is.null(usage)) { cat("missing usage table:", sample_name, "\n"); return(NULL) }
+  tiers <- cnmfload_tiers[[sample_name]] %>%
+    filter(tier %in% c("both", "CaRe_only", "GEX_only", "neg"),
+           cellID %in% rownames(usage))
+  as_tibble(usage[tiers$cellID, , drop = FALSE]) %>%
+    mutate(sample = sample_name, cellID = tiers$cellID, tier = tiers$tier,
+           care_UMIs = tiers$care_UMIs, GEX_UMIs = tiers$GEX_UMIs) %>%
+    tidyr::pivot_longer(starts_with("Pattern_"), names_to = "pattern", values_to = "usage") %>%
+    mutate(program = cfg$labels[pattern])
+}) %>%
+  filter(!is.na(program),
+         !grepl("contaminant|contamination", program, ignore.case = TRUE)) %>%
+  mutate(sample = factor(sample, cnmfload_samples),
+         load_bin = cut(care_UMIs, cnmfload_breaks, labels = cnmfload_bin_labels))
+
+# Cells of one infected-population definition
+cnmfload_population <- function(cells, population) {
+  switch(population,
+    `all Ca*Re`  = cells %>% filter(tier != "neg", care_UMIs > 0),
+    `low (2-7)`  = cells %>% filter(tier != "neg", care_UMIs > 0, care_UMIs < cnmfload_cut),
+    `high (8+)`  = cells %>% filter(tier != "neg", care_UMIs >= cnmfload_cut),
+    `10X-called` = cells %>% filter(tier != "neg", GEX_UMIs > 0))
+}
+
+cnmfload_log2FC <- function(tested, reference) {
+  log2((mean(tested) + 1e-10) / (mean(reference) + 1e-10))
+}
+
+# Usage by load bin, against the sample's uninfected cells
+cnmfload_bins <- purrr::map_dfr(levels(cnmfload_cells$sample), function(sample_name) {
+  sample_cells <- cnmfload_cells %>% filter(sample == sample_name)
+  purrr::map_dfr(unique(sample_cells$program), function(program_name) {
+    program_cells <- sample_cells %>% filter(program == program_name)
+    reference <- program_cells %>% filter(tier == "neg")
+    if (nrow(reference) < cnmfload_min_cells) return(NULL)
+    purrr::map_dfr(cnmfload_bin_labels, function(bin) {
+      tested <- program_cells %>% filter(tier != "neg", care_UMIs > 0, load_bin == bin)
+      if (nrow(tested) < cnmfload_min_cells) return(NULL)
+      tibble(sample = sample_name, program = program_name, load_bin = bin,
+             n_cells = nrow(tested),
+             log2FC = cnmfload_log2FC(tested$usage, reference$usage),
+             p_value = tier_safe_p(wilcox.test(tested$usage, reference$usage)$p.value))
+    })
+  })
+}) %>% group_by(sample) %>% mutate(p_adj = p.adjust(p_value, "BH")) %>% ungroup()
+
+# Usage by infected-population definition, with a bootstrap CI on each log2FC
+cnmfload_populations <- purrr::map_dfr(levels(cnmfload_cells$sample), function(sample_name) {
+  sample_cells <- cnmfload_cells %>% filter(sample == sample_name)
+  purrr::map_dfr(unique(sample_cells$program), function(program_name) {
+    program_cells <- sample_cells %>% filter(program == program_name)
+    reference <- program_cells %>% filter(tier == "neg")
+    if (nrow(reference) < cnmfload_min_cells) return(NULL)
+    purrr::map_dfr(cnmfload_population_levels, function(population) {
+      tested <- cnmfload_population(program_cells, population)
+      if (nrow(tested) < cnmfload_min_cells) return(NULL)
+      set.seed(1)
+      draws <- replicate(cnmfload_n_boot, {
+        cnmfload_log2FC(sample(tested$usage, nrow(tested), TRUE),
+                        sample(reference$usage, nrow(reference), TRUE))
+      })
+      ci <- quantile(draws, c(0.025, 0.975))
+      tibble(sample = sample_name, program = program_name, population = population,
+             n_cells = nrow(tested), n_reference = nrow(reference),
+             log2FC = cnmfload_log2FC(tested$usage, reference$usage),
+             ci_low = ci[[1]], ci_high = ci[[2]],
+             p_value = tier_safe_p(wilcox.test(tested$usage, reference$usage)$p.value))
+    })
+  })
+}) %>% group_by(sample) %>% mutate(p_adj = p.adjust(p_value, "BH")) %>% ungroup()
+
+# Spearman of usage against load, among virus-transcribing cells only
+cnmfload_correlation <- cnmfload_cells %>%
+  filter(tier != "neg", care_UMIs > 0) %>%
+  group_by(sample, program) %>%
+  filter(n() >= cnmfload_min_cells) %>%
+  summarize(n_cells = n(),
+            rho = tier_safe_p(cor(usage, care_UMIs, method = "spearman")),
+            p_value = tier_safe_p(cor.test(usage, care_UMIs, method = "spearman")$p.value),
+            .groups = "drop") %>%
+  group_by(sample) %>% mutate(p_adj = p.adjust(p_value, "BH")) %>% ungroup()
+
+write.csv(cnmfload_bins, paste0(cnmfload_output.dir, "SuppFig3_cnmf_loadBins.csv"),
+          row.names = FALSE)
+write.csv(cnmfload_populations %>% select(-ci_low, -ci_high),
+          paste0(cnmfload_output.dir, "SuppFig3_cnmf_populations.csv"), row.names = FALSE)
+write.csv(cnmfload_populations %>%
+            select(sample, program, population, n_cells, log2FC, ci_low, ci_high, p_adj),
+          paste0(cnmfload_output.dir, "SuppFig3_cnmf_bootstrapCI.csv"), row.names = FALSE)
+write.csv(cnmfload_correlation,
+          paste0(cnmfload_output.dir, "SuppFig3_cnmf_loadCorrelation.csv"), row.names = FALSE)
+
+cat("\n=== Program usage by load bin, log2FC vs uninfected ===\n")
+print(as.data.frame(cnmfload_bins %>%
+  transmute(sample, program, load_bin, n_cells, log2FC = round(log2FC, 3),
+            p_adj = signif(p_adj, 2)) %>%
+  arrange(sample, program, factor(load_bin, cnmfload_bin_labels))), row.names = FALSE)
+
+cat("\n=== Program usage by infected-population definition, with bootstrap CI ===\n")
+print(as.data.frame(cnmfload_populations %>%
+  transmute(sample, program, population, n_cells, log2FC = round(log2FC, 3),
+            CI = paste0("[", round(ci_low, 3), ", ", round(ci_high, 3), "]"),
+            p_adj = signif(p_adj, 2)) %>%
+  arrange(sample, program, factor(population, cnmfload_population_levels))), row.names = FALSE)
+
+cat("\n=== Spearman: program usage against load among infected cells ===\n")
+print(as.data.frame(cnmfload_correlation %>%
+  transmute(sample, program, n_cells, rho = round(rho, 3), p_adj = signif(p_adj, 2)) %>%
+  arrange(sample, program)), row.names = FALSE)
+```
+
+
+### Supp Fig 3 Panel B: host library size control
+Made in SuppFigs.Rmd (`suppfig3_panelB_hostsize`), from the tier tables and
+the cleaned cNMF usage tables the chunk above reads.
+
+
+### Published marker panels and per-gene tests on the infected populations
+Whether the published descriptions of infected and reservoir cells hold on each
+infected-population definition, tested as marker panels rather than as cNMF
+programs so the comparison does not depend on our own factorization. Each panel
+is named for the study whose claim it tests, and each is scored with
+`AddModuleScore` and compared against `n_random` expression-matched random gene
+sets, since infected cells carry more host RNA and a random set of the same size
+and expression profile therefore also shifts away from zero. The individual
+marker genes are tested on their own as well, because a panel can be null while
+single genes within it move.
+
+This loads each per-sample Seurat RDS, so it does not run in the knit. Run
+`extractionScripts/submissionScripts/Figure3/suppfig3_marker_panels.sh` on a compute node first; it writes
+`SuppFig3_markerPanels_null.csv` and `SuppFig3_markerPanels_perGene.csv`, which
+this chunk reads.
+
+Prerequisites: the `tier_tables` chunk, and `extractionScripts/submissionScripts/Figure3/suppfig3_marker_panels.sh`
+already run.
+```{r suppfig3_marker_panels}
+markerpanel_output.dir <- cnmfload_output.dir
+markerpanel_null_file   <- paste0(markerpanel_output.dir, "SuppFig3_markerPanels_null.csv")
+markerpanel_gene_file   <- paste0(markerpanel_output.dir, "SuppFig3_markerPanels_perGene.csv")
+markerpanel_populations <- c("all Ca*Re", "low (2-7)", "high (8+)", "10X-called")
+# The genes the Supplementary text quotes, drawn out of the full per-gene table
+markerpanel_genes <- c("BACH2", "SATB1", "CD28", "IL21R", "CD44", "IL7R", "CCR7", "TCF7")
+
+if (!file.exists(markerpanel_null_file) || !file.exists(markerpanel_gene_file)) {
+  cat("Run extractionScripts/submissionScripts/Figure3/suppfig3_marker_panels.sh first; expected\n  ",
+      markerpanel_null_file, "\n  ", markerpanel_gene_file, "\n")
+} else {
+  markerpanel_null <- read.csv(markerpanel_null_file, check.names = FALSE)
+  markerpanel_gene <- read.csv(markerpanel_gene_file, check.names = FALSE)
+
+  cat("\n=== Marker panels against an expression-matched random-gene null ===\n")
+  print(as.data.frame(markerpanel_null %>%
+    transmute(sample, population = arm, set, n_cells, n_genes,
+              observed = round(observed, 4), null_mean = round(null_mean, 4),
+              z = round(z, 2), p_two_sided = signif(p_two_sided, 2)) %>%
+    arrange(sample, set, factor(population, markerpanel_populations))), row.names = FALSE)
+
+  cat("\n=== Marker genes quoted in the text, per population ===\n")
+  print(as.data.frame(markerpanel_gene %>%
+    filter(gene %in% markerpanel_genes) %>%
+    transmute(sample, gene, population = arm, log2FC = round(log2FC, 3),
+              pct_population = round(pct_arm, 1), pct_uninfected = round(pct_neg, 1),
+              p_adj = signif(p_adj, 2)) %>%
+    arrange(gene, sample, factor(population, markerpanel_populations))), row.names = FALSE)
+}
+```
+
+
+
+### Panel I: host state of splice+ vs splice- cells on ART
+Whether the D195 cells carrying a spliced viral UMI sit anywhere different in
+host transcriptome space from the ones that do not. A cell is virus-transcribing
+if either chemistry calls it, and splice+ if either arm sees a spliced UMI, which
+is the same definition Panels G and H use (`total > 0` on the combined table) and
+the one the Invitro and W2 panels use, so the three samples are counted alike.
+That gives 19 splice+ and 23 splice-; the 3 cells only the TenX arm calls were
+assayed for splicing and carry none, so they are splice-, not missing data.
+
+Two separation statistics, each against `hoststate_nperm` permutations of the
+splice labels among the same cells. The null is what makes a negative result
+interpretable: at these group sizes any two groups sit some distance apart, and
+the null says how far apart label noise alone puts them. Statistics are computed
+on the leading `REDUCTION_DIMENSIONS` principal components.
+
+  - `pseudo_F`    PERMANOVA (Anderson 2001) on the Euclidean distances,
+    between-group over within-group sum of squares, via `vegan::adonis2`.
+  - `silhouette`  mean silhouette width of the splice labelling
+    (`cluster::silhouette`): ~0 means a cell is no closer to its own group than
+    to the other.
+
+Both are one-sided upper: only "further apart than chance" is evidence of a
+difference. `adonis2` runs its own permutations, so its p comes from the same
+procedure as the silhouette null rather than from a distributional assumption.
+
+A null here can be multimodal when a few cells lie far from the rest, since a
+shuffle either splits them between the groups or does not. The chunk therefore
+repeats both tests on the cells surviving a label-blind outlier screen, and
+prints that, so the legend can say whether the result rests on those cells.
+
+Prerequisites: the `tier_tables` chunk has written `D195_tiers.csv`, and
+`D195.rds` exists. Loads that object for its PCA, so run on a compute node.
+Needs `vegan` and `cluster`.
+```{r d195_splice_hoststate}
+hoststate.dir   <- paste0(data.root, "Figure1/combined/")
+hoststate_rds   <- paste0(data.root, "Figure1/singleCell/Seurat/RDS/D195.rds")
+output.dir      <- paste0(plot.root, "Figure3/")
+dir.create(output.dir, recursive = TRUE, showWarnings = FALSE)
+hoststate_nperm <- 5000
+
+hoststate_cells <- read.csv(paste0(hoststate.dir, "tiers/D195_tiers.csv")) %>%
+  mutate(cellID = as.character(cellID)) %>%
+  filter(care_UMIs > 0 | GEX_UMIs > 0) %>%
+  mutate(splice = ifelse(care_spliced | GEX_spliced, "splice+", "splice-"))
+
+hoststate_obj <- readRDS(hoststate_rds)
+hoststate_emb <- Embeddings(hoststate_obj, reduction = "pca")[, 1:REDUCTION_DIMENSIONS, drop = FALSE]
+rm(hoststate_obj); gc()
+hoststate_cells <- hoststate_cells %>% filter(cellID %in% rownames(hoststate_emb))
+hoststate_emb <- hoststate_emb[hoststate_cells$cellID, , drop = FALSE]
+hoststate_labels <- hoststate_cells$splice
+
+# Both statistics take their data explicitly rather than closing over the
+# embedding, so the outlier rerun below cannot silently test the wrong matrix.
+hoststate_silhouette <- function(labels, D) {
+  mean(cluster::silhouette(as.integer(factor(labels)), dmatrix = D)[, "sil_width"])
+}
+hoststate_adonis <- function(labels, D) {
+  unname(vegan::adonis2(D ~ labels, permutations = hoststate_nperm)$F[1])
+}
+
+# Permutations are drawn before anything that might seed the RNG itself (Seurat's
+# FindMarkers takes `random.seed` and does), so the null cannot silently collapse
+# to one shuffle repeated nperm times. The stopifnot fails loudly if it does.
+hoststate_test <- function(emb, labels, tag) {
+  D <- dist(emb)
+  Dm <- as.matrix(D)
+  set.seed(1)
+  perms <- replicate(hoststate_nperm, sample(labels), simplify = FALSE)
+  stopifnot(length(unique(vapply(perms, paste, character(1), collapse = ""))) >
+              hoststate_nperm / 2)
+
+  # adonis2 permutes internally and returns its own p; the silhouette null is
+  # built from the same shuffles used for every other permutation test here.
+  fit <- vegan::adonis2(D ~ labels, permutations = hoststate_nperm)
+  # adonis2 keeps its permuted F values, so the panel can draw the same null the
+  # p-value came from instead of a second one built here.
+  f_null <- as.numeric(vegan::permustats(fit)$permutations)
+  sil_observed <- hoststate_silhouette(labels, Dm)
+  sil_null <- vapply(perms, hoststate_silhouette, numeric(1), D = Dm)
+
+  list(
+    null = bind_rows(tibble(statistic = "pseudo_F", value = f_null),
+                     tibble(statistic = "silhouette", value = sil_null)),
+    result = bind_rows(
+      tibble(analysis = tag, statistic = "pseudo_F", n_cells = length(labels),
+             observed = unname(fit$F[1]), null_mean = mean(f_null),
+             p_perm = unname(fit$`Pr(>F)`[1])),
+      tibble(analysis = tag, statistic = "silhouette", n_cells = length(labels),
+             observed = sil_observed, null_mean = mean(sil_null),
+             p_perm = (sum(sil_null >= sil_observed) + 1) / (hoststate_nperm + 1))))
+}
+
+hoststate_main <- hoststate_test(hoststate_emb, hoststate_labels, "all cells")
+
+# Outliers are chosen by distance to the overall centroid, without reference to
+# the splice labels, so the screen cannot create or erase a group difference.
+hoststate_mad_cut <- 5
+hoststate_d_centre <- sqrt(rowSums(sweep(hoststate_emb, 2, colMeans(hoststate_emb))^2))
+hoststate_keep <- hoststate_d_centre <=
+  median(hoststate_d_centre) + hoststate_mad_cut * mad(hoststate_d_centre)
+hoststate_result <- if (all(hoststate_keep)) hoststate_main$result else
+  bind_rows(hoststate_main$result,
+            hoststate_test(hoststate_emb[hoststate_keep, , drop = FALSE],
+                           hoststate_labels[hoststate_keep],
+                           paste0("outliers dropped (n=", sum(hoststate_keep), ")"))$result)
+
+cat("=== D195 splice+ vs splice-: separation in PC space,",
+    hoststate_nperm, "permutations ===\n")
+print(as.data.frame(hoststate_result %>% mutate(across(where(is.numeric), ~ signif(.x, 3)))),
+      row.names = FALSE)
+cat("cells:", nrow(hoststate_emb), "| splice+:", sum(hoststate_labels == "splice+"),
+    "| PCs:", ncol(hoststate_emb),
+    "| outliers dropped:", sum(!hoststate_keep),
+    if (any(!hoststate_keep)) paste0(" (", paste(hoststate_labels[!hoststate_keep],
+                                                 collapse = ", "), ")") else "", "\n")
+
+hoststate_labels_pretty <- c(pseudo_F = "PERMANOVA pseudo-F", silhouette = "mean silhouette width")
+hoststate_null_df <- hoststate_main$null %>%
+  mutate(statistic = hoststate_labels_pretty[statistic])
+hoststate_observed_df <- hoststate_main$result %>%
+  mutate(statistic = hoststate_labels_pretty[statistic])
+hoststate_null_plot <- ggplot(hoststate_null_df, aes(value)) +
+  geom_histogram(bins = 40, fill = "grey78", color = NA) +
+  geom_vline(data = hoststate_observed_df, aes(xintercept = observed),
+             color = "#54278F", linewidth = 0.8) +
+  geom_text(data = hoststate_observed_df, aes(x = observed, y = Inf,
+                                              label = paste0("p = ", signif(p_perm, 2))),
+            hjust = -0.15, vjust = 1.6, size = 2.5, color = "#54278F") +
+  facet_wrap(~ statistic, scales = "free", nrow = 1) +
+  labs(x = NULL, y = paste0("permutations (of ", hoststate_nperm, ")"),
+       subtitle = "purple = observed splice labels; grey = permuted labels") +
+  theme_classic(base_size = 9) +
+  theme(strip.background = element_blank(),
+        axis.line = element_line(color = "gray40", linewidth = 0.3),
+        axis.ticks = element_line(color = "gray40", linewidth = 0.3))
+
+ggsave(paste0(output.dir, "PanelI_D195_splice_hostState.pdf"),
+       hoststate_null_plot, width = 6, height = 2.6)
+write.csv(hoststate_result, paste0(output.dir, "PanelI_D195_splice_hostState.csv"),
+          row.names = FALSE)
+```
+
+
+# Public data
+This section applies the above Figure3 analysis to two public human datasets:
+Collora et al. 2022 is unstimulated CD4+ T cells,  2nd letter V = viremic,
+S = suppressed (ART), and 2023Rep* are uninfected controls.
+HIV-seq is Frouard et al. 2026: week0 = pre-ART/viremic, week24/week45 = 
+on-ART/suppressed, using only the "Primer" (HIV-enriched) libraries. 
+Both went through the same joint GRCh38+HXB2 cellranger alignment (stepOne) and
+bamsort (stepTwo).
+
+Note six PID8027 fastq from GEO GSE266455 incorrect labels were reassigned:
+week0replicate1NOTHING <-> week45replicate4NOTHING, week0replicate2NOTHING <->
+week0replicate5Primer, week0replicate6Primer <-> week45replicate3NOTHING.
+Our correction was post-hoc so cellranger's `web_summary.html`, the BAM `@RG` 
+tag are still the incorrect original sample IDs.
+
+## Load
+Prerequisite: the Integrate chunk below has been run once for that
+pass, so the `<condition>_<participant>.rds` files exist. Rerun after changing
+`min_hiv_reads`, a dataset's `hiv_rule`, `hiv_tcell_gate` or `public_pass`
+
+```{r public_load}
+# --- settings ---------------------------------------------------------------
+min_hiv_reads  <- 2       # HXB2 reads per barcode
+hiv_tcell_gate <- TRUE    # CD4 T by ADT protein, by gene where there is no ADT
+public_pass    <- "Viremic"     # or c("ART", "Uninfected")
+public_load_datasets <- c("HIVseq", "Collora")
+options(future.globals.maxSize = 8 * 1024^3)  # 8 GiB
+
+# --- datasets ---------------------------------------------------------------
+public_datasets <- list(
+  Collora = list(
+    results    = "collora_res",
+    deg.dir    = paste0(data.root, "Collora/DEG/"),
+    conditions = c("Viremic", "ART", "Uninfected")),
+  HIVseq = list(
+    results    = "hivseq_res",
+    deg.dir    = paste0(data.root, "HIVseq/DEG/"),
+    conditions = c("Viremic", "ART"))
+)
+
+public_paths <- list(
+  Collora = list(
+    counts     = paste0(public.root, "Colloraetal2022/counts"),
+    bamsort    = paste0(data.root, "Collora/bamsort"),
+    rds        = paste0(data.root, "Collora/Seurat/RDS_publishedQC"),
+    integrated = paste0(data.root, "Collora/Seurat/integrated_publishedQC"),
+    qc         = list(min_features = 500, max_features = Inf,
+                      max_counts = Inf, max_mito = 10),
+    hiv_rule   = "collora"),
+  HIVseq = list(
+    counts     = paste0(public.root, "HIVseq/counts"),
+    bamsort    = paste0(data.root, "HIVseq/bamsort"),
+    rds        = paste0(data.root, "HIVseq/Seurat/RDS_publishedQC"),
+    integrated = paste0(data.root, "HIVseq/Seurat/integrated_publishedQC"),
+    qc         = list(min_features = 500, max_features = Inf,
+                      max_counts = Inf, max_mito = 15))
+)
+
+# --- sample maps ------------------------------------------------------------
+collora_conditions <- tibble::tribble(
+  ~sample,    ~condition,
+  "DV739","Viremic", "DV799","Viremic", "DV910","Viremic",
+  "IV236","Viremic", "IV640","Viremic", "IV829","Viremic",
+  "RIV236","Viremic","RIV829","Viremic",
+  "DS739","ART", "DS799","ART", "DS910","ART",
+  "IS236","ART", "IS640","ART", "IS829","ART", "RDS739","ART", "RDS799","ART",
+  "2023Rep1","Uninfected", "2023Rep2","Uninfected"
+) %>%
+  mutate(participant = sub("^[A-Za-z]+", "", sample))
+
+hivseq_samples <- sub("_bamsort_alignment_LTR_D1.csv$", "", basename(
+  Sys.glob(file.path(public_paths$HIVseq$bamsort,
+                     "*_bamsort_alignment_LTR_D1.csv"))))
+hivseq_samples <- hivseq_samples[grepl("Primer$", hivseq_samples)]
+hivseq_conditions <- tibble(sample = hivseq_samples) %>%
+  mutate(condition   = ifelse(grepl("week0", sample), "Viremic", "ART"),
+         participant = sub("PID(\\d+).*", "\\1", sample))
+
+public_maps <- list(Collora = collora_conditions, HIVseq = hivseq_conditions)
+
+# --- reload -----------------------------------------------------------------
+# A dataset with no cached integration for this pass warns and is skipped
+public_load_all(public_load_datasets, public_pass)
+```
+
+## Extraction
+Run these chunks in order
+
+### Per-sample objects
+Prerequisites: run the Load chunk.
+```{r public_extraction}
+public_build_dataset <- "HIVseq"
+
+public_dataset_libraries <- sub("_bamsort_alignment_LTR_D1.csv$", "", basename(
+  Sys.glob(file.path(public_paths[[public_build_dataset]]$bamsort,
+                     "*_bamsort_alignment_LTR_D1.csv"))))
+public_build_list <- union(
+  public_maps[[public_build_dataset]] %>%
+    filter(condition %in% public_pass) %>% pull(sample),
+  public_dataset_libraries[grepl("week0", public_dataset_libraries)]) %>%
+  sort()
+
+cat("===", public_build_dataset, "-", length(public_build_list),
+    "per-sample objects,", paste(public_pass, collapse = "+"), "pass ===\n")
+print(public_qc(public_build_dataset))
+print(as.data.frame(public_build_rds(public_build_dataset, public_build_list)))
+```
+
+### Integrate
+This is a compute-heavy step.
+Prerequisites: run the Load chunk.
+
+```{r public_integrate}
+public_load_all(public_load_datasets, public_pass, loader = public_extract)
+```
+
+### Per-participant DEG
+Prerequisites: the Load, Per-sample objects, and Integrate chunks above
+
+Both contrasts within each participant: HIV+ vs HIV- and splice+ vs splice-
+among the HIV+ cells. A contrast with fewer than `public_min_cells` cells on
+either side is skipped.
+
+```{r public_deg}
+for (dataset in public_loaded()) {
+  output.dir <- public_datasets[[dataset]]$deg.dir
+  dir.create(output.dir, recursive = TRUE, showWarnings = FALSE)
+
+  public_walk_groups(dataset, function(obj, group) {
+    DefaultAssay(obj) <- "RNA"
+    obj <- JoinLayers(obj, assay = "RNA")
+    tested_genes <- setdiff(rownames(obj[["RNA"]]), public_exclude_genes)
+
+    for (contrast_name in names(public_contrasts)) {
+      contrast <- public_contrasts[[contrast_name]]
+      obj$deg_group <- contrast$groups(obj)
+      n1 <- sum(obj$deg_group == contrast$ident.1, na.rm = TRUE)
+      n2 <- sum(obj$deg_group == contrast$ident.2, na.rm = TRUE)
+      if (n1 < public_min_cells || n2 < public_min_cells) {
+        cat("Skipping", dataset, group, contrast_name,
+            "- insufficient cells (", n1, "vs", n2, ")\n")
+        next
+      }
+
+      Idents(obj) <- "deg_group"
+      deg <- FindMarkers(obj,
+                         ident.1 = contrast$ident.1, ident.2 = contrast$ident.2,
+                         features = tested_genes,
+                         assay = "RNA", test.use = "wilcox",
+                         logfc.threshold = 0, min.pct = 0.1, verbose = FALSE)
+      deg$gene <- rownames(deg)
+      write.csv(deg, paste0(output.dir, group, contrast$suffix),
+                row.names = FALSE)
+      cat("Processed", dataset, group, contrast_name,
+          "-", contrast$ident.1, ":", n1, contrast$ident.2, ":", n2, "\n")
+    }
+  })
+}
+```
+
+## Plotting
+
+### Print: SIV pathway classes and the public HIV+ signature
+In-text numbers for the SIV tier analysis against the public PWH signature.
+
+Prerequisites: the #All SIV `tier_tables`, `tier_deg` and `pathway_scores`,
+and #Public Data `public_deg`.
+```{r tier_pathways, warning=FALSE}
+tier_public_files <- c(
+  Sys.glob(paste0(data.root, "Collora/DEG/Viremic_*_DEG_infected.csv")),
+  Sys.glob(paste0(data.root, "HIVseq/DEG/Viremic_*_DEG_infected.csv")))
+tier_public_min_tables <- 2
+tier_pathway_contrasts <- c("GEX_vs_neg", "Both_vs_neg", "CaReOnly_vs_neg",
+                            "CaReOnly_vs_GEX", "Union_vs_neg", "GEX_naive")
+
+tier_public_sets <- public_hiv_signature(tier_public_files, tier_fc, tier_pval,
+                                         tier_public_min_tables)
+cat("=== Public signature from", length(tier_public_files), "tables ===\n")
+print(lengths(tier_public_sets))
+print(tier_public_sets)
+
+# Reuses the Hallmark list the pathway_scores chunk built
+tier_hallmark_sets <- setNames(pathway_hallmark, paste0("HALLMARK_", names(pathway_hallmark)))
+
+tier_rank <- function(deg) {
+  stat <- sign(deg$avg_log2FC) * -log10(pmax(deg$p_val, .Machine$double.xmin))
+  setNames(stat, deg$gene)
+}
+
+tier_pathways <- purrr::map_dfr(names(tier_tables), function(sample_name) {
+  purrr::map_dfr(tier_pathway_contrasts, function(contrast_name) {
+    deg <- tier_read_deg(tier_deg.dir, sample_name, "all", contrast_name)
+    if (is.null(deg)) return(NULL)
+    ranks <- tier_rank(deg)
+    public_in_universe <- lapply(tier_public_sets, intersect, names(ranks))
+    bind_rows(
+      fgsea::fgsea(public_in_universe, ranks, minSize = 5, maxSize = 500,
+                   nPermSimple = 10000) %>%
+        as_tibble() %>% mutate(collection = "Public TenX"),
+      fgsea::fgsea(tier_hallmark_sets, ranks, minSize = 10, maxSize = 500,
+                   nPermSimple = 10000) %>%
+        as_tibble() %>% mutate(collection = "Hallmark",
+                               pathway = sub("^HALLMARK_", "", pathway))) %>%
+      transmute(sample = sample_name, contrast = contrast_name, collection,
+                pathway, NES, padj, size)
+  })
+})
+write.csv(tier_pathways, paste0(tier_deg.dir, "pathways_fgsea.csv"), row.names = FALSE)
+
+cat("\n=== Public TenX signature in each contrast ===\n")
+print(as.data.frame(tier_pathways %>% filter(collection == "Public TenX") %>%
+                      arrange(pathway, sample, contrast)))
+
+tier_hallmark <- tier_pathways %>% filter(collection == "Hallmark")
+tier_pathway_classes <- purrr::map_dfr(names(tier_reference_contrasts), function(reference_contrast) {
+  inner_join(
+    tier_hallmark %>% filter(contrast == reference_contrast) %>%
+      select(sample, pathway, NES_TenX = NES, padj_TenX = padj),
+    tier_hallmark %>% filter(contrast == "CaReOnly_vs_neg") %>%
+      select(sample, pathway, NES_CaRe = NES, padj_CaRe = padj),
+    by = c("sample", "pathway")) %>%
+    mutate(reference = reference_contrast,
+           gex_sig  = padj_TenX  < tier_gsea_padj,
+           care_sig = padj_CaRe < tier_gsea_padj,
+           class = case_when(
+             gex_sig & care_sig & sign(NES_TenX) == sign(NES_CaRe) ~ "shared",
+             gex_sig & care_sig ~ "discordant",
+             gex_sig            ~ "GEX only",
+             care_sig           ~ "Ca*Re-added only",
+             TRUE               ~ "ns"))
+})
+cat("\n=== Hallmark pathway classes per sample and TenX reference ===\n")
+print(as.data.frame(tier_pathway_classes %>% count(reference, sample, class)))
+print(as.data.frame(tier_pathway_classes %>% filter(class != "ns") %>%
+                      arrange(reference, sample, class, pathway)))
+
+```
+
+# Giron et al
+## Extraction
+Downloaded  Giron et al. 2024 (GSE254483) ADT + HTO with our resequenced TenX.
+
+GSE254483 is four hashed pools, HIV-A to HIV-D, each carrying two PWH and two
+HIV-uninfected donors. This section analyses the HIV-D pool: it is the only one
+that yields HIV RNA+ cells in either arm. Over the whole bamsort window set the
+Ca*Re libraries of HIV-D carry 1,457 of the 1,459 HXB2 reads recovered from any
+pool, and in the TenX arm HIV-A and HIV-C give 0 HIV RNA+ CD4 T cells against
+HIV-D's 2, so the other pools contribute nothing to the Ca*Re-vs-TenX
+comparison or to Panel K. HIV-B was not resequenced.
+
+Prerequisites: under `extractionScripts/submissionScripts/Figure3`,
+`stepOne_cellranger.sh` (TenX + ADT + hashtags), `stepTwo_bamsort.sh` (HXB2
+alignment + splice tables) and `stepThree_process.sh` (per-UMI categories) have
+been run, writing to `extractedData/Figure3/singleCell`; and the Public data
+`public_load` chunk above has been run, which sets `min_hiv_reads` and
+`hiv_tcell_gate` for the `hxb2_per_cell` / `attach_hxb2` helpers this section
+reuses.
+
+### Helpers
+
+```{r giron_helpers}
+# Donor hashtag -> Scode for the HIV-D pool, resolved against the deposited
+# GSE254483 matrix. Its PWH donors are S19/S20 and its HIV-uninfected donors,
+# the internal negative control for both arms, are S17/S18.
+giron_donors <- tibble::tribble(
+  ~pool,   ~hashtag,   ~donor,
+  "HIV-D", "Hashtag4", "S19", "HIV-D", "HTO_BD1", "S18",
+  "HIV-D", "HTO_BD2",  "S17", "HIV-D", "HTO_BD3", "S20"
+) %>%
+  mutate(donor_status = ifelse(donor %in% c("S19", "S20"),
+                               "PWH", "uninfected"))
+
+# Resolved members of the 12-antibody CITE-seq panel (remaining ADT ids keep
+# their cellranger feature names).
+giron_adt_map <- c(ADT05 = "CD3", ADT11 = "CD4", ADT08 = "CD8")
+
+# Transcriptome QC for this pool, applied twice: once to choose the barcodes
+# the demultiplexers see, and again inside SeuratPipeline. Defined once here so
+# the two cannot drift apart.
+#   min_features = 500 matches the only filter the authors applied (GSE254483
+#     data processing: "filtered cells expressing fewer than 500 genes").
+#   max_mito = 5 is the SeuratPipeline default, kept so this pool is cut
+#     the same way as every other sample in the paper.
+#   max_counts = 10000 tightens the SeuratPipeline default of 20000.
+giron_qc <- list(min_features = 500, max_features = 3500,
+                 max_counts = 10000, max_mito = 5)
+
+# Barcodes passing that QC, built the way SeuratPipeline builds it so the two
+# agree cell for cell.
+giron_qc_pass <- function(tenx, pool) {
+  q <- CreateSeuratObject(counts = tenx, project = pool, min.cells = 3,
+                          min.features = giron_qc$min_features)
+  q <- scCustomize::Add_Mito_Ribo(q, species = "Human")
+  keep <- q$nFeature_RNA > giron_qc$min_features &
+          q$nFeature_RNA < giron_qc$max_features &
+          q$nCount_RNA   < giron_qc$max_counts &
+          q$percent_mito < giron_qc$max_mito
+  colnames(q)[keep]
+}
+
+# Seurat replaces underscores in feature names with dashes, so match either form.
+giron_features <- function(mat, ids) {
+  idx <- match(gsub("_", "-", ids), gsub("_", "-", rownames(mat)))
+  stopifnot(!any(is.na(idx)))
+  out <- mat[idx, , drop = FALSE]
+  rownames(out) <- gsub("_", "-", ids)
+  out
+}
+
+# One hashed pool -> processed Seurat object of demultiplexed singlets, with
+# RNA (human genes), ADT and HTO assays and per-cell donor metadata.
+load_giron_pool <- function(pool, counts_root, rds_dir) {
+  rds <- file.path(rds_dir, paste0(pool, ".rds"))
+  if (file.exists(rds)) return(readRDS(rds))
+
+  mtx <- file.path(counts_root, paste0("GRCh38_HXB2_", pool),
+                   "outs", "filtered_feature_bc_matrix")
+  data <- Read10X(data.dir = mtx)
+  tenx <- data[["Gene Expression"]]
+  ab  <- data[["Antibody Capture"]]
+
+  donors <- giron_donors[giron_donors$pool == pool, ]
+  hto_counts <- giron_features(ab, donors$hashtag)
+  # The feature reference carries all 8 hashtags (of all four pools); only the
+  # ADT panel belongs in the surface-protein assay.
+  adt_counts <- ab[grepl("^ADT", rownames(ab)), , drop = FALSE]
+  known <- intersect(names(giron_adt_map), rownames(adt_counts))
+  rownames(adt_counts)[match(known, rownames(adt_counts))] <- unname(giron_adt_map[known])
+
+  # demuxmix requires that empty droplets and low-quality cells be removed on
+  # their transcriptomic profile before the mixture models are fitted (Klein
+  # 2023, Bioinformatics 39:btad481), so the QC cuts come first and both
+  # demultiplexers see only the barcodes that survive them.
+  qc_pass <- giron_qc_pass(tenx, pool)
+  tenx <- tenx[, qc_pass, drop = FALSE]
+  hto_counts <- hto_counts[, qc_pass, drop = FALSE]
+  adt_counts <- adt_counts[, qc_pass, drop = FALSE]
+
+  demux <- CreateSeuratObject(counts = tenx, project = pool)
+  demux[["HTO"]] <- CreateAssayObject(counts = hto_counts)
+  demux[["ADT"]] <- CreateAssayObject(counts = adt_counts)
+  demux <- NormalizeData(demux, assay = "HTO", normalization.method = "CLR",
+                         verbose = FALSE)
+  demux <- HTODemux(demux, assay = "HTO", positive.quantile = 0.99, verbose = FALSE)
+  demux <- NormalizeData(demux, assay = "ADT", normalization.method = "CLR",
+                         margin = 2, verbose = FALSE)
+
+  # HTODemux calls each hashtag against its own background, so a droplet can
+  # carry a clean top hashtag and still be loaded with ambient antibody from the
+  # other donors -- the same ambient that puts Ca*Re molecules on uninfected
+  # donors' cells. demuxmix models each hashtag's counts as a negative binomial
+  # mixture regressed on the number of detected genes per cell, which separates
+  # multiplets and ambiguous droplets from true singlets, so a barcode is kept
+  # only if both call it a singlet. The two agree on donor identity for every
+  # cell they both keep, so the donor call itself still comes from `hash.ID`.
+  # pAcpt is the posterior probability demuxmix requires to accept a call. Its
+  # default, 0.9^n_hashtags, relaxes as pools get larger (0.66 for four
+  # hashtags); a flat 0.9 applies the same per-hashtag confidence whatever the
+  # pool size. It moves the least confident singlets to "uncertain" -- 252 of the
+  # 18,010 QC-passing barcodes in HIV-D -- and those are the droplets carrying the most
+  # ambient hashtag from the other donors. 0.9, 0.95 and 0.99 all give the same
+  # Ca*Re calls, so the result does not hinge on the exact value.
+  set.seed(1)
+  dmm <- demuxmix::demuxmix(
+    as.matrix(GetAssayData(demux, assay = "HTO", layer = "counts")),
+    rna = Matrix::colSums(tenx > 0), pAcpt = 0.9)
+  dmm_class <- demuxmix::dmmClassify(dmm)[colnames(demux), ]
+  clean <- dmm_class$Type == "singlet"
+
+  hash_id <- as.character(demux$hash.ID)
+  singlet <- as.character(demux$HTO_classification.global) == "Singlet" & clean
+  message(pool, ": ", sum(singlet), " singlets / ", ncol(demux), " QC-passing barcodes (",
+          sum(demux$HTO_classification.global == "Doublet"), " HTODemux doublets, ",
+          sum(demux$HTO_classification.global == "Negative"), " negative; demuxmix ",
+          sum(dmm_class$Type == "multiplet"), " multiplet, ",
+          sum(dmm_class$Type == "uncertain"), " uncertain, ",
+          sum(dmm_class$Type == "negative"), " negative)")
+
+  # Surface-protein T cell gate: CD3+ by 2-means on the CLR values, CD4 vs CD8.
+  # This is the call `adt_cd4t_pass` reads for this pool, so it is the gate
+  # behind HIV_status and the Ca*Re call, not just a cell-type label.
+  adt_clr <- GetAssayData(demux, assay = "ADT", layer = "data")
+  cd3 <- as.numeric(adt_clr["CD3", ]); cd4 <- as.numeric(adt_clr["CD4", ])
+  cd8 <- as.numeric(adt_clr["CD8", ])
+  set.seed(1)
+  km <- kmeans(cd3, centers = 2, nstart = 10)
+  cd3_pos <- km$cluster == which.max(km$centers[, 1])
+  cell_type_adt <- ifelse(cd3_pos & cd4 > cd8 & cd4 > 0, "CD4_T",
+                   ifelse(cd3_pos & cd8 > cd4 & cd8 > 0, "CD8_T",
+                   ifelse(cd3_pos, "other_T", "non_T")))
+  names(cell_type_adt) <- colnames(demux)
+  names(hash_id) <- colnames(demux)
+
+  # Standard human pipeline on the transcriptome of the singlets only. The QC
+  # arguments repeat `giron_qc`, which these barcodes already passed, so the cuts
+  # are a no-op re-check here and the CD4/CD8 transcript-doublet removal and the
+  # normalization/PCA/UMAP steps are what this call contributes.
+  #
+  # plots = TRUE writes SeuratPipeline's own QC figures (pre/post-QC violins of
+  # nFeature_RNA, nCount_RNA and percent_mito, the elbow plot and the UMAP) under
+  # <output_dir>/plots/, so a rebuild leaves a record of what the cuts did.
+  obj <- SeuratPipeline(tenx[, singlet, drop = FALSE], sample_name = pool,
+                        output_dir = dirname(rds_dir), plots = TRUE,
+                        rds = FALSE, species = "Human", remove_mac = TRUE,
+                        min_features = giron_qc$min_features,
+                        max_features = giron_qc$max_features,
+                        max_counts   = giron_qc$max_counts,
+                        max_mito     = giron_qc$max_mito)
+
+  cells <- colnames(obj)
+  obj$pool          <- pool
+  hashtag_of_cell   <- unname(hash_id[cells])
+  donor_of_hashtag  <- setNames(donors$donor, gsub("_", "-", donors$hashtag))
+  status_of_hashtag <- setNames(donors$donor_status, gsub("_", "-", donors$hashtag))
+  obj$hashtag       <- hashtag_of_cell
+  obj$donor         <- unname(donor_of_hashtag[hashtag_of_cell])
+  obj$donor_status  <- unname(status_of_hashtag[hashtag_of_cell])
+  obj$cell_type_adt <- unname(cell_type_adt[cells])
+  obj$demuxmix_type <- dmm_class$Type[match(cells, colnames(demux))]
+  obj$demuxmix_prob <- dmm_class$Prob[match(cells, colnames(demux))]
+  obj[["HTO"]] <- CreateAssayObject(counts = hto_counts[, cells, drop = FALSE])
+  obj[["ADT"]] <- CreateAssayObject(counts = adt_counts[, cells, drop = FALSE])
+  obj <- NormalizeData(obj, assay = "HTO", normalization.method = "CLR", verbose = FALSE)
+  obj <- NormalizeData(obj, assay = "ADT", normalization.method = "CLR",
+                       margin = 2, verbose = FALSE)
+  DefaultAssay(obj) <- "RNA"
+
+  dir.create(rds_dir, recursive = TRUE, showWarnings = FALSE)
+  saveRDS(obj, rds)
+  obj
+}
+```
+
+### Per-pool objects
+Prerequisite: the Public data `public_load` chunk has been run, for
+`min_hiv_reads` and `hiv_tcell_gate`. First run is compute-heavy; reruns read the
+cached per-pool RDS.
+```{r giron_extraction}
+giron_root    <- paste0(data.root, "Figure3/singleCell")
+giron_counts  <- file.path(giron_root, "counts")
+giron_bamsort <- file.path(giron_root, "bamsort")
+giron_rds     <- file.path(giron_root, "Seurat", "RDS")
+dir.create(giron_rds, recursive = TRUE, showWarnings = FALSE)
+
+giron_pools <- "HIV-D"
+
+giron_objs <- lapply(giron_pools, function(pool) {
+  obj <- load_giron_pool(pool, giron_counts, giron_rds)
+  obj$orig.ident <- pool
+  obj <- RenameCells(obj, add.cell.id = pool)
+  attach_hxb2(obj, pool, giron_bamsort)
+})
+names(giron_objs) <- giron_pools
+
+# One row per donor.
+giron_summary <- purrr::map_dfr(giron_objs, function(obj) {
+  tibble(pool         = obj$pool,
+         donor        = obj$donor,
+         donor_status = obj$donor_status,
+         cd4_T        = obj$CD4_Tcell,
+         hiv          = obj$HIV_status == "HIV+")
+}) %>%
+  group_by(pool, donor, donor_status) %>%
+  summarize(n_cells = n(), cd4_T = sum(cd4_T), HIV_RNA_pos_cells = sum(hiv),
+            .groups = "drop") %>%
+  arrange(pool, donor)
+
+cat("=== Giron et al., joint GRCh38+HXB2, >=", min_hiv_reads,
+    "HXB2 reads/cell (by donor) ===\n")
+print(as.data.frame(giron_summary))
+```
+
+### Ca*Re
+`D__UMI_read_counts_full.csv` from `Figure3/CaRe/bamsort/reads/`. The pool was
+probed with five Ca*Re libraries (`D_D1`, `_D4`, `_env`, `_nef`, `_pol`);
+stepThree gathers all five into one per-UMI table, resolves multi-mapped UMIs
+and filters to the pool's raw cellIDs, so no per-library summing is needed here. This chunk
+applies the detection thresholds and the CD4 T gate, and attaches the result to
+each pool's object as metadata.
+Prerequisite: `stepTwo_bamsort_CaRe.sh` + `stepThree_process_CaRe.sh` under
+`extractionScripts/submissionScripts/Figure3` have been run, plus
+the `giron_extraction` chunk above.
+```{r giron_care}
+giron_care_dir <- paste0(data.root,
+                          "Figure3/CaRe/bamsort/reads/")
+giron_care_pool <- c(D_ = "HIV-D")
+giron_care_cols <- c("US", "US.SS", "SS.MS", "SS", "MS", "any", "total")
+
+# Detection thresholds. Set here rather than in the pipeline so they can be
+# varied without re-running stepThree.
+#
+# Read counts are distinct reads: stepTwo charges a read spanning two adjacent
+# junction windows to one of them (`primary_count`), so min_reads means what it
+# says. Under the old summed counts every D1-probe molecule was doubled and
+# min_reads = 5 was really 2.5.
+#
+# The two HIV-uninfected donors multiplexed into the pool are the internal
+# negative control, and the threshold is set to the point where they are empty.
+# At min_umi = 1 that point is min_reads = 4; 4, 5 and 6 all return the same
+# four PWH cells, so 5 is used to keep a step of margin rather than sitting on
+# the boundary of the control. Requiring a second UMI instead would leave one
+# PWH cell of the four, so the read threshold is the cheaper way to the same
+# specificity now that ambient droplets are removed upstream by demuxmix and
+# the CD4 T gate is applied to this arm as well as the TenX arm.
+giron_care_min_reads <- 5   # min reads to keep a UMI
+giron_care_min_umi   <- 1   # min UMIs to call a cell Ca*Re+
+
+read_giron_care <- function(pool) {
+  empty <- setNames(rep(list(numeric()), length(giron_care_cols)), giron_care_cols)
+  empty <- tibble::as_tibble(c(list(cellID = character()), empty))
+
+  token <- names(giron_care_pool)[match(pool, giron_care_pool)]
+  f <- file.path(giron_care_dir, paste0(token, "_UMI_read_counts_full.csv"))
+  # stepThree writes no file for a pool with no HXB2 reads in any region.
+  if (!file.exists(f)) {
+    message("CaRe: no stepThree table for ", pool, " (", basename(f), ")")
+    return(empty)
+  }
+
+  d <- set_minimums("CaRe", f,
+                      min_reads = giron_care_min_reads,
+                      min_umi   = giron_care_min_umi,
+                      save_valid_umi = FALSE)
+  if (nrow(d) == 0) return(empty)
+
+  # set_minimums names categories "US-SS"/"SS-MS"; read.csv would have made
+  # those "US.SS"/"SS.MS", which is what the rest of this section expects.
+  names(d) <- gsub("-", ".", names(d), fixed = TRUE)
+  for (cc in giron_care_cols) if (!cc %in% names(d)) d[[cc]] <- 0
+  d %>%
+    mutate(cellID = paste0(pool, "_", as.character(cellID))) %>%
+    select(cellID, dplyr::all_of(giron_care_cols))
+}
+
+# Attach the pooled CaRe counts to each per-pool object. Ca*Re is called on the
+# same population as the TenX arm: `attach_hxb2` zeroes the HXB2 columns outside
+# the CD4 T gate before calling HIV_status, so the CaRe columns are zeroed
+# there too and the two arms are counted over the same cells.
+giron_objs <- lapply(giron_pools, function(pool) {
+  obj <- giron_objs[[pool]]
+  care <- read_giron_care(pool)
+  m <- match(colnames(obj), care$cellID)
+  pick <- function(col) ifelse(is.na(m) | !obj$CD4_Tcell, 0, care[[col]][m])
+  obj$CaRe       <- pick("total")
+  obj$CaRe_US    <- pick("US")
+  obj$CaRe_US.SS <- pick("US.SS")
+  obj$CaRe_SS.MS <- pick("SS.MS")
+  obj$CaRe_SS    <- pick("SS")
+  obj$CaRe_MS    <- pick("MS")
+  obj$CaRe_any   <- pick("any")
+  obj$CaRe_status <- ifelse(obj$CaRe > 0, "CaRe+", "CaRe-")
+  obj
+})
+names(giron_objs) <- giron_pools
+
+giron_care_summary <- purrr::map_dfr(giron_objs, function(obj) {
+  tibble(pool  = obj$pool,
+         donor = obj$donor,
+         care = obj$CaRe_status == "CaRe+",
+         hiv   = obj$HIV_status == "HIV+")
+}) %>%
+  group_by(pool, donor) %>%
+  summarize(n_cells = n(), CaRe_pos_cells = sum(care),
+            TenX_HIV_pos_cells = sum(hiv), both = sum(care & hiv),
+            .groups = "drop") %>%
+  arrange(pool, donor)
+
+cat("=== Giron et al. CaRe (EGS026, 5 probes pooled;",
+    ">=", giron_care_min_reads, "reads/UMI, >=", giron_care_min_umi,
+    "UMIs/cell) ===\n")
+print(as.data.frame(giron_care_summary))
+```
+
+### Print: detection against the pool's HIV-uninfected donors
+In-text sentence for the specificity of the viral-RNA call. The HIV-D pool
+multiplexes two PWH with two HIV-uninfected donors, so the uninfected pair is an
+internal negative control that went through the same droplets, the same library
+and the same bamsort window set as the PWH pair: a false positive from ambient
+virion RNA or from index hopping would have to land on them too. Both arms are
+counted over the gated CD4 T cells, which is the population `attach_hxb2` and
+the Ca*Re attachment both zero outside.
+Prerequisites: the `giron_extraction` and `giron_care` chunks above.
+```{r giron_negative_control}
+giron_control <- purrr::map_dfr(giron_objs, function(obj)
+  tibble(donor_status = obj$donor_status, donor = obj$donor,
+         cd4_T = obj$CD4_Tcell,
+         GEX  = obj$HIV_status  == "HIV+",
+         CaRe = obj$CaRe_status == "CaRe+")) %>%
+  filter(cd4_T) %>%
+  group_by(donor_status) %>%
+  summarize(donors = n_distinct(donor), cd4_T = n(),
+            GEX_pos = sum(GEX), CaRe_pos = sum(CaRe), .groups = "drop")
+
+cat("=== Giron HIV-D, gated CD4 T cells by donor status ===\n")
+print(as.data.frame(giron_control), row.names = FALSE)
+
+# The sentence is emitted per arm rather than once, because the positive call is
+# the TenX one in one arm and the Ca*Re one in the other, and the two differ on
+# the PWH donors even though both are empty on the controls.
+giron_control_arms <- c(GEX = "TenX|HIV RNA+", CaRe = "Ca*Re|Ca*Re+")
+giron_control_sentence <- function(arm) {
+  label <- strsplit(giron_control_arms[[arm]], "|", fixed = TRUE)[[1]]
+  neg <- giron_control[giron_control$donor_status == "uninfected", ]
+  pwh <- giron_control[giron_control$donor_status == "PWH", ]
+  cat(sprintf(
+    "%s: %d %s / %s CD4+ T cells from %d HIV-negative individuals, versus %d / %s from %d PWH\n",
+    label[1], neg[[paste0(arm, "_pos")]], label[2],
+    format(neg$cd4_T, big.mark = ","), neg$donors,
+    pwh[[paste0(arm, "_pos")]], format(pwh$cd4_T, big.mark = ","), pwh$donors))
+}
+cat("\n")
+invisible(lapply(names(giron_control_arms), giron_control_sentence))
+```
+
+
+
+# ART comparison
+
+## Extraction
+### Per-cell table
+
+Prerequisites: `public_load` (for `public_paths`, `public_maps`), the ART
+per-sample objects from `public_extraction`, the `public_deg` Viremic tables,
+`giron_extraction` and `giron_care`, and the `tier_tables` chunk for
+`D195_tiers.csv`. Loads every per-sample object in turn, so run on a compute
+node.
+```{r art_cells}
+art.dir <- paste0(data.root, "Figure3/ARTcompare/")
+dir.create(art.dir, recursive = TRUE, showWarnings = FALSE)
+art_cells_file <- paste0(art.dir, "art_cd4t_cells.rds")
+
+art_hallmark_sets <- c("OXIDATIVE_PHOSPHORYLATION", "GLYCOLYSIS", "MTORC1_SIGNALING",
+                       "INTERFERON_GAMMA_RESPONSE", "INTERFERON_ALPHA_RESPONSE",
+                       "TNFA_SIGNALING_VIA_NFKB", "INFLAMMATORY_RESPONSE")
+art_public_files <- c(
+  Sys.glob(paste0(data.root, "Collora/DEG/Viremic_*_DEG_infected.csv")),
+  Sys.glob(paste0(data.root, "HIVseq/DEG/Viremic_*_DEG_infected.csv")))
+art_gene_sets <- c(cd4t_subset_markers,
+                   hallmark_gene_sets()[art_hallmark_sets],
+                   public_hiv_signature(art_public_files, fc = 0.5, pval = 0.01,
+                                        min_tables = 2)["PUBLIC_HIV_UP"])
+
+# Viral features are left out of host library size and gene sets
+art_viral_feature <- function(genes) genes == "HXB2" | grepl("mac239", genes, ignore.case = TRUE)
+
+# Host library size and module scores over one object's CD4 T cells
+art_score_cd4 <- function(obj, cells) {
+  DefaultAssay(obj) <- "RNA"
+  obj <- subset(obj, cells = cells)
+  if (inherits(obj[["RNA"]], "Assay5")) obj <- JoinLayers(obj, assay = "RNA")
+  counts <- GetAssayData(obj, assay = "RNA", layer = "counts")
+  host <- !art_viral_feature(rownames(counts))
+  obj <- NormalizeData(obj, assay = "RNA", verbose = FALSE)
+  present <- lapply(art_gene_sets, intersect, rownames(counts)[host])
+  usable <- names(present)[lengths(present) >= 3]
+  obj <- AddModuleScore(obj, features = present[usable], assay = "RNA",
+                        name = "art_score", seed = 1, search = FALSE)
+  scores <- obj@meta.data[, paste0("art_score", seq_along(usable)), drop = FALSE]
+  colnames(scores) <- usable
+  bind_cols(tibble(cellID   = colnames(obj),
+                   nCount   = Matrix::colSums(counts[host, ]),
+                   nFeature = Matrix::colSums(counts[host, ] > 0)),
+            as_tibble(scores))
+}
+
+# HXB2 UMIs of a human object, and whether any is spliced
+art_hxb2_umis <- function(md) {
+  md$HXB2_US + md$HXB2_US.SS + md$HXB2_SS.MS + md$HXB2_SS + md$HXB2_MS + md$HXB2_any
+}
+
+if (file.exists(art_cells_file)) {
+  art_cells <- readRDS(art_cells_file)
+} else {
+  art_giron <- purrr::map_dfr(giron_pools, function(pool) {
+    obj <- giron_objs[[pool]]
+    cd4 <- colnames(obj)[obj$CD4_Tcell]
+    md <- obj@meta.data[cd4, ]
+    art_score_cd4(obj, cd4) %>%
+      mutate(dataset = "Giron", reference_group = md$donor,
+             donor_status = md$donor_status,
+             GEX_called  = md$HIV_status == "HIV+", CaRe_called = md$CaRe_status == "CaRe+",
+             GEX_UMIs    = art_hxb2_umis(md),       CaRe_UMIs   = md$CaRe,
+             GEX_spliced = md$HXB2_SS.MS + md$HXB2_SS + md$HXB2_MS > 0,
+             CaRe_spliced = md$CaRe_SS.MS + md$CaRe_SS + md$CaRe_MS > 0)
+  })
+
+  art_public <- purrr::map_dfr(c("Collora", "HIVseq"), function(dataset) {
+    paths <- public_paths[[dataset]]
+    libraries <- public_maps[[dataset]] %>% filter(condition == "ART")
+    purrr::map_dfr(libraries$sample, function(sample) {
+      obj <- load_human_sample(sample, paths$counts, paths$rds, qc = public_qc(dataset))
+      obj$orig.ident <- sample
+      obj <- attach_hxb2(RenameCells(obj, add.cell.id = sample), sample,
+                         paths$bamsort, rule = public_hiv_rule(dataset))
+      cd4 <- colnames(obj)[obj$CD4_Tcell]
+      md <- obj@meta.data[cd4, ]
+      out <- art_score_cd4(obj, cd4) %>%
+        mutate(dataset = dataset, reference_group = sample, donor_status = "PWH",
+               GEX_called  = md$HIV_status == "HIV+", CaRe_called = FALSE,
+               GEX_UMIs    = art_hxb2_umis(md),       CaRe_UMIs   = 0,
+               GEX_spliced = md$HXB2_SS.MS + md$HXB2_SS + md$HXB2_MS > 0,
+               CaRe_spliced = FALSE)
+      rm(obj); gc()
+      out
+    })
+  })
+
+  art_d195_tiers <- read.csv(paste0(data.root, "Figure1/",
+                                    "combined/tiers/D195_tiers.csv")) %>%
+    mutate(cellID = as.character(cellID))
+  art_d195_obj <- readRDS(paste0(data.root, "Figure1/",
+                                 "singleCell/Seurat/RDS/D195.rds"))
+  art_d195 <- art_score_cd4(art_d195_obj, intersect(art_d195_tiers$cellID, colnames(art_d195_obj)))
+  rm(art_d195_obj); gc()
+  tiers_m <- art_d195_tiers[match(art_d195$cellID, art_d195_tiers$cellID), ]
+  art_d195 <- art_d195 %>%
+    mutate(dataset = "SIV D195", reference_group = "D195", donor_status = "SIV+ ART",
+           GEX_called  = tiers_m$tier %in% c("both", "GEX_only"),
+           CaRe_called = tiers_m$tier %in% c("both", "CaRe_only"),
+           GEX_UMIs    = tiers_m$GEX_UMIs, CaRe_UMIs = tiers_m$care_UMIs,
+           GEX_spliced = tiers_m$GEX_spliced, CaRe_spliced = tiers_m$care_spliced)
+
+  art_cells <- bind_rows(art_giron, art_public, art_d195) %>%
+    mutate(positive = GEX_called | CaRe_called)
+  saveRDS(art_cells, art_cells_file)
+}
+
+cat("=== CD4 T cells and positives per dataset ===\n")
+print(as.data.frame(art_cells %>% group_by(dataset) %>%
+  summarize(CD4_T = n(), reference_groups = n_distinct(reference_group),
+            GEX = sum(GEX_called), CaRe = sum(CaRe_called), positives = sum(positive))),
+  row.names = FALSE)
+```
+
+## Plotting
+### Panel K: host state of the HIV RNA+ cells on ART
+
+Prerequisites: the `art_cells` chunk.
+```{r art_set_level}
+art_panel.dir  <- paste0(plot.root, "Figure3/")
+dir.create(art_panel.dir, recursive = TRUE, showWarnings = FALSE)
+art_nperm <- 10000
+set.seed(1)
+
+art_features <- c("nCount", "nFeature", names(cd4t_subset_markers), art_hallmark_sets,
+                  "PUBLIC_HIV_UP")
+art_feature_labels <- c(nCount = "host UMIs", nFeature = "host genes",
+                        naive_Tcm = "naive/Tcm", Tem = "Tem", cytotoxic = "cytotoxic",
+                        Treg = "Treg", cycling = "cycling",
+                        OXIDATIVE_PHOSPHORYLATION = "OxPhos", GLYCOLYSIS = "Glycolysis",
+                        MTORC1_SIGNALING = "mTORC1", INTERFERON_GAMMA_RESPONSE = "IFN-gamma",
+                        INTERFERON_ALPHA_RESPONSE = "IFN-alpha",
+                        TNFA_SIGNALING_VIA_NFKB = "TNFA/NFkB",
+                        INFLAMMATORY_RESPONSE = "Inflammatory",
+                        PUBLIC_HIV_UP = "viremic HIV+ signature")
+art_human <- c("Giron", "Collora", "HIVseq")
+art_levels <- c(art_human, "SIV D195", "Human pooled")
+art_dataset_colors <- c(Giron = "#1baf7a", public_dataset_colors, `SIV D195` = "#9B8579")
+art_panel_features <- c("naive_Tcm", "Tem", "cytotoxic", "INTERFERON_GAMMA_RESPONSE",
+                        "TNFA_SIGNALING_VIA_NFKB", "INFLAMMATORY_RESPONSE")
+
+art_pct <- art_cells
+for (f in art_features) {
+  art_pct[[paste0("pct_", f)]] <- within_group_percentile(art_pct[[f]], art_pct$reference_group)
+}
+art_level_cells <- function(level) {
+  if (level == "Human pooled") filter(art_pct, dataset %in% art_human)
+  else filter(art_pct, dataset == level)
+}
+
+art_set_tests <- purrr::map_dfr(art_levels, function(level) {
+  df <- art_level_cells(level)
+  purrr::map_dfr(art_features, function(f) {
+    values <- df[[paste0("pct_", f)]]
+    observed <- mean(values[df$positive])
+    null <- matched_mean_null(values, df$reference_group, df$positive, art_nperm)
+    tibble(level = level, feature = f, n_pos = sum(df$positive), mean_pct = observed,
+           null_mean = mean(null), null_sd = stats::sd(null),
+           null_lo = quantile(null, 0.025), null_hi = quantile(null, 0.975),
+           p = min(1, 2 * min(mean(null >= observed), mean(null <= observed))))
+  }) %>% mutate(p_adj = p.adjust(p, "BH"))
+}) %>%
+  # The positives' mean in SD of its own null. The null's width is set by the
+  # number of positives, so this is what makes a value comparable between a
+  # level with 5 positives and one with 42; the panel fills on it.
+  mutate(z = (mean_pct - null_mean) / null_sd)
+cat("=== Positives' mean within-group percentile vs group-matched draws ===\n")
+print(as.data.frame(art_set_tests %>%
+  mutate(across(c(mean_pct, null_mean, null_sd, null_lo, null_hi, z), ~ round(.x, 3)),
+         across(c(p, p_adj), ~ signif(.x, 2)))), row.names = FALSE)
+
+# Human positives against SIV positives directly, two-sided Wilcoxon rank-sum
+# on the within-group percentiles, BH across the same 15 features. Printed and
+# written out but NOT drawn: the panel's mark is the per-group matched-draw
+# test, so each row is read against its own null and not against the other
+# row. Marking this comparison on the plot would invite reading the panel as a
+# demonstrated between-group difference, and none of the six plotted
+# signatures reaches significance here. It is kept because that is exactly the
+# caveat the contrast needs, and because the test treats cells as independent
+# while the human side spans donors and libraries and the SIV side is one
+# animal.
+art_between <- purrr::map_dfr(art_features, function(f) {
+  col <- paste0("pct_", f)
+  human <- art_level_cells("Human pooled") %>% filter(positive)
+  siv   <- art_level_cells("SIV D195")     %>% filter(positive)
+  tibble(feature = f, n_human = nrow(human), n_siv = nrow(siv),
+         mean_human = mean(human[[col]]), mean_siv = mean(siv[[col]]),
+         p = wilcox.test(human[[col]], siv[[col]])$p.value)
+}) %>% mutate(p_adj = p.adjust(p, "BH"))
+cat("\n=== human ART positives vs SIV ART positives (Wilcoxon on percentiles) ===\n")
+print(as.data.frame(art_between %>%
+  mutate(across(c(mean_human, mean_siv), ~ round(.x, 3)),
+         across(c(p, p_adj), ~ signif(.x, 2)))), row.names = FALSE)
+
+# Main panel: the six signatures across the x axis, the pooled human positives
+# and the SIV ART sample as the two rows. Both are percentiles within the
+# cell's own donor or library, which is what puts two species and two
+# chemistries on a common scale.
+#
+# The tile is filled by z, the positives' mean in SD of its own matched-draw
+# null, and not by the raw mean. The null's width is set by the number of
+# positives, 23 against 42 here, so a raw-percentile fill would give the same
+# colour to two cells carrying different evidence. The printed number is the
+# raw mean percentile, so both quantities are on the tile.
+art_panel_levels <- c("Human pooled", "SIV D195")
+art_panel_labels <- c(`Human pooled` = "human pooled", `SIV D195` = "SIV ART (D195)")
+art_z_limit <- 3.5
+
+art_row_labels <- setNames(
+  sprintf("%s\nn = %d", art_panel_labels[art_panel_levels],
+          art_set_tests$n_pos[match(art_panel_levels, art_set_tests$level)]),
+  art_panel_levels)
+
+art_panel_tiles <- art_set_tests %>%
+  filter(level %in% art_panel_levels, feature %in% art_panel_features) %>%
+  mutate(row = factor(art_row_labels[level], levels = rev(art_row_labels)),
+         feature_label = factor(art_feature_labels[feature],
+                                levels = art_feature_labels[art_panel_features]),
+         star = ifelse(p_adj < 0.05, "*", ""))
+
+art_pooled_plot <- ggplot(art_panel_tiles, aes(feature_label, row, fill = z)) +
+  geom_tile(color = "grey90", linewidth = 0.4) +
+  # A BH-significant cell carries a heavy outline as well as the asterisk, so
+  # the mark reads in greyscale and at panel size.
+  geom_tile(data = filter(art_panel_tiles, p_adj < 0.05), fill = NA,
+            color = "black", linewidth = 0.7) +
+  geom_text(aes(label = sprintf("%.2f%s", mean_pct, star)), size = 2.9) +
+  scale_fill_gradient2(low = "#2166AC", mid = "white", high = "#B2182B",
+                       limits = c(-art_z_limit, art_z_limit), oob = scales::squish,
+                       breaks = c(-art_z_limit, 0, art_z_limit),
+                       labels = c(sprintf("%.1f (depleted)", -art_z_limit), "0",
+                                  sprintf("+%.1f (enriched)", art_z_limit)),
+                       name = "SD from null",
+                       guide = guide_colorbar(title.position = "top",
+                                              title.hjust = 0.5)) +
+  scale_x_discrete(expand = expansion(0)) +
+  scale_y_discrete(expand = expansion(0)) +
+  labs(x = NULL, y = NULL,
+       subtitle = paste("HIV/SIV RNA+ CD4 T cells on ART; cell = their mean percentile among",
+                        "the CD4 T cells of the\nsame donor / library, fill = that mean in SD of",
+                        sprintf("%s group-matched draws of the same\nnumber of negatives;",
+                                format(art_nperm, big.mark = ",")),
+                        "outline and * = BH p < 0.05 across the 15 features of that row")) +
+  theme_minimal(base_size = 9) +
+  theme(panel.grid = element_blank(), axis.ticks = element_blank(),
+        axis.text.x = element_text(size = 7.5),
+        axis.text.y = element_text(size = 7.5, lineheight = 0.95, hjust = 1),
+        legend.position = "bottom", legend.key.height = unit(0.22, "cm"),
+        legend.key.width = unit(1.4, "cm"),
+        legend.title = element_text(size = 7), legend.text = element_text(size = 7),
+        legend.margin = margin(t = -2),
+        plot.subtitle = element_text(size = 6.6, hjust = 0, lineheight = 1.1,
+                                     margin = margin(b = 4)),
+        plot.margin = margin(4, 6, 2, 4))
+ggsave(paste0(art_panel.dir, "PanelK_ART_hostState.pdf"), art_pooled_plot,
+       width = 6.6, height = 2.5)
+write.csv(art_between, paste0(art_panel.dir, "PanelK_ART_humanVsSIV_tests.csv"),
+          row.names = FALSE)
+write.csv(art_set_tests, paste0(art_panel.dir, "PanelK_ART_hostState_tests.csv"),
+          row.names = FALSE)
+print(art_pooled_plot)
+
+# Supp Fig 3 Panel H draws every feature at every level from the tests
+# written just above; it is made in SuppFigs.Rmd
+# (`suppfig3_panelH_art_features`).
+```
+
+### Print: viral load of the ART macaque against the acute samples
+
+Prerequisites: the `tier_tables` chunk has written `<sample>_tiers.csv`, and
+stepOne cellranger has written `metrics_summary.csv` for each sample's Ca*Re and
+TenX libraries
+```{r art_load_depth_normalised}
+artload_group <- c(D195 = "ART", Invitro = "invitro", Pacute = "viremia", W2 = "viremia")
+artload_reference <- c("Invitro", "Pacute", "W2")
+# Viral UMIs per cell per this many reads per cell
+artload_per_reads <- 1e4
+
+artload_metric <- function(file, field) {
+  metrics <- read.csv(file, check.names = FALSE)
+  as.numeric(gsub(",", "", metrics[[field]][1]))
+}
+artload_care_reads <- function(sample_name) {
+  files <- Sys.glob(paste0(data.root, "Figure1/CaRe/", artload_group[[sample_name]],
+                           "/counts/Mmul_10_mac239_", sample_name,
+                           "_*/outs/metrics_summary.csv"))
+  if (length(files) == 0) return(NA_real_)
+  sum(vapply(files, artload_metric, numeric(1), "Number of Reads"))
+}
+artload_tenx_reads <- function(sample_name) {
+  file <- paste0(data.root, "Figure1/singleCell/counts/outs_", sample_name,
+                 "/metrics_summary.csv")
+  if (!file.exists(file)) return(NA_real_)
+  artload_metric(file, "Number of Reads")
+}
+
+artload_tiers <- read_tier_tables(paste0(data.root, "Figure1/combined/tiers/"),
+                                  names(artload_group))
+artload_table <- purrr::map_dfr(names(artload_group), function(sample_name) {
+  tiers <- artload_tiers[[sample_name]]
+  if (is.null(tiers)) { cat("missing tier table:", sample_name, "\n"); return(NULL) }
+  umis <- list(`Ca*Re` = tiers$care_UMIs, TenX = tiers$GEX_UMIs)
+  reads <- c(`Ca*Re` = artload_care_reads(sample_name),
+             TenX    = artload_tenx_reads(sample_name))
+  purrr::map_dfr(names(umis), function(arm_name) {
+    reads_per_cell <- reads[[arm_name]] / nrow(tiers)
+    tibble(sample = sample_name, arm = arm_name, cells = nrow(tiers),
+           positive = sum(umis[[arm_name]] > 0), max_umi = max(umis[[arm_name]]),
+           reads = reads[[arm_name]], reads_per_cell = reads_per_cell,
+           max_per_reads = artload_per_reads * max(umis[[arm_name]]) / reads_per_cell)
+  })
+})
+
+cat(sprintf(paste0("=== Maximum viral UMIs per CD4 T cell, raw and per %s reads",
+                   " per cell ===\n"), format(artload_per_reads, big.mark = ",",
+                                              scientific = FALSE)))
+print(as.data.frame(artload_table %>%
+  transmute(sample, arm, cells, positive, max_umi,
+            reads = format(reads, big.mark = ",", scientific = FALSE),
+            reads_per_cell = round(reads_per_cell),
+            max_per_reads = round(max_per_reads, 2))), row.names = FALSE)
+
+for (arm_name in unique(artload_table$arm)) {
+  art  <- artload_table %>% filter(arm == arm_name, sample == "D195")
+  rest <- artload_table %>% filter(arm == arm_name, sample %in% artload_reference)
+  top_raw  <- rest[which.max(rest$max_umi), ]
+  top_norm <- rest[which.max(rest$max_per_reads), ]
+  cat(sprintf(paste0("\n%s: ART (D195) %d UMIs in its highest cell, %.2f per %s reads",
+                     " per cell\n  (%s positive cells of %s gated, %s reads = %s per",
+                     " cell).\n  Highest elsewhere: %s %d UMIs (%.1fx ART) raw, %s %.2f",
+                     " per %s reads per cell (%.1fx ART).\n"),
+              arm_name, art$max_umi, art$max_per_reads,
+              format(artload_per_reads, big.mark = ",", scientific = FALSE),
+              format(art$positive, big.mark = ","), format(art$cells, big.mark = ","),
+              format(art$reads, big.mark = ",", scientific = FALSE),
+              format(round(art$reads_per_cell), big.mark = ","),
+              top_raw$sample, top_raw$max_umi, top_raw$max_umi / art$max_umi,
+              top_norm$sample, top_norm$max_per_reads,
+              format(artload_per_reads, big.mark = ",", scientific = FALSE),
+              top_norm$max_per_reads / art$max_per_reads))
+}
+rm(arm_name, art, rest, top_raw, top_norm)
+```
+
+
+# Viral load vs splice status
+Per-cell viral load of every HIV/SIV RNA+ CD4 T cell, split by whether any of
+its viral molecules is spliced, with the viremic and the ART-suppressed donors
+side by side. Built in the style of Supp Fig 2 Panel E (the SIV version of the
+same comparison), so the human datasets and D195 are read off one axis.
+
+Viral load is **UMIs**, not reads: `hxb2` is a read count (it is what the
+`reads` HIV+ rule tests), while the isoform columns `US / US.SS / SS / MS /
+SS.MS / any` written by `hxb2_per_cell` are counts of distinct (cell, UMI)
+pairs, so `art_hxb2_umis` sums them to the cell's viral UMI count. splice+ is
+`SS + MS + SS.MS > 0`, the same rule as `public_sample_table` and Supp Fig 2
+Panel E: SS-MS is the {SS, MS} set, so the molecule is certainly spliced and
+only its splice count is unresolved. SS is unreachable in the HXB2 arm (no
+region in `hiv_region_category` emits it and the splice override emits only
+MS / SS.MS), so for the human 10X data the rule reduces to `MS + SS.MS > 0`;
+it is written out in full so the SIV and HIV arms carry one definition.
+
+## Extraction
+### Viremic per-cell table
+The viremic counterpart of `art_cells`: one row per CD4 T cell of the Collora
+and HIV-seq viremic libraries, with its viral UMI count and splice status. No
+module scores are computed here -- this panel needs only the viral columns --
+so the table is built straight from `load_human_sample` + `attach_hxb2` rather
+than through `art_score_cd4`. Cached to
+`extractedData/Figure3/loadSplice/viremic_cd4t_cells.rds`; delete it to rebuild.
+Prerequisites: `public_load` (for `public_paths`, `public_maps`, `public_qc`,
+`min_hiv_reads` and `hiv_tcell_gate`), the per-sample Seurat objects under each
+dataset's `rds` directory, and the `art_cells` chunk for `art_hxb2_umis`.
+Loads 18 per-sample objects in turn, so run on a compute node.
+```{r viremic_cells}
+loadsplice.dir <- paste0(data.root, "Figure3/loadSplice/")
+dir.create(loadsplice.dir, recursive = TRUE, showWarnings = FALSE)
+viremic_cells_file <- paste0(loadsplice.dir, "viremic_cd4t_cells.rds")
+
+if (file.exists(viremic_cells_file)) {
+  viremic_cells <- readRDS(viremic_cells_file)
+} else {
+  viremic_cells <- purrr::map_dfr(c("Collora", "HIVseq"), function(dataset) {
+    libraries <- public_maps[[dataset]] %>% filter(condition == "Viremic")
+    paths <- public_paths[[dataset]]
+    purrr::map_dfr(libraries$sample, function(sample) {
+      obj <- load_human_sample(sample, paths$counts, paths$rds, qc = public_qc(dataset))
+      obj$orig.ident <- sample
+      obj <- attach_hxb2(RenameCells(obj, add.cell.id = sample), sample,
+                         paths$bamsort, rule = public_hiv_rule(dataset))
+      md <- obj@meta.data[obj$CD4_Tcell, , drop = FALSE]
+      out <- tibble(
+        cellID = rownames(md), dataset = dataset, reference_group = sample,
+        participant  = libraries$participant[match(sample, libraries$sample)],
+        donor_status = "PWH",
+        GEX_called   = md$HIV_status == "HIV+", CaRe_called = FALSE,
+        GEX_UMIs     = art_hxb2_umis(md),       CaRe_UMIs   = 0,
+        GEX_spliced  = md$HXB2_SS.MS + md$HXB2_SS + md$HXB2_MS > 0,
+        CaRe_spliced = FALSE)
+      rm(obj); gc()
+      out
+    })
+  }) %>% mutate(positive = GEX_called | CaRe_called)
+  saveRDS(viremic_cells, viremic_cells_file)
+}
+
+cat("=== viremic CD4 T cells and HIV RNA+ calls per dataset ===\n")
+print(as.data.frame(viremic_cells %>% group_by(dataset) %>%
+  summarize(libraries = n_distinct(reference_group), participants = n_distinct(participant),
+            CD4_T = n(), HIV_pos = sum(GEX_called),
+            splice_pos = sum(GEX_called & GEX_spliced))), row.names = FALSE)
+```
+
+## Plotting
+### Panel J: viral load of splice+ and splice- cells, viremic vs ART
+One point per HIV/SIV RNA+ CD4 T cell, x = dataset and detection arm, y = that
+cell's viral UMIs on a log10 axis, coloured by splice status, faceted into the
+viremic and the ART-suppressed donors. A boxplot is drawn only where a splice
+group holds at least `loadsplice_min_box` cells, so a group too small for
+quartiles to land on real observations shows its cells and nothing else. No
+statistic depends on that cut: the tests and summaries below are computed
+over every called cell regardless of what is drawn. Where a group has both splice groups the annotation is
+the difference in mean viral UMIs and a two-sided Wilcoxon rank-sum test of
+viral UMIs between them; where it has no splice+ cell the annotation says so,
+as in Supp Fig 2 Panel E.
+
+Two summaries are printed alongside the panel, both over the viremic cells.
+The first is the splice+ **rate** per viral load bin (`loadsplice_bins`,
+doubling in width so the axis is even on a log scale), which measures how
+splice detection tracks load across the whole range. The second,
+`pct_neg_at_min_pos` in the stats table, is the share of a group's splice-
+cells whose load reaches the lowest load any splice+ cell of that same group
+carries: the exclusivity check, where 0 means the two splice groups do not
+overlap in load at all and 100 means the splice+ range spans the whole
+splice- range. The rate is the one to quote, because a single splice+ cell at
+the bottom of the axis sets the minimum and with it `pct_neg_at_min_pos`,
+while the rate is computed over every cell in every bin.
+
+The dashed horizontal line is the low/high viral load boundary, taken from
+Panel C's `tier_binload_cut` rather than fitted again here, so "high load"
+means one thing across the figure. It is carried across both facets, so the
+ART cells are read against the boundary the viremic cells set.
+
+Panel C fits that cut as the trough of a two-component Gaussian mixture on
+log2 load in the SIV Ca*Re samples. The same procedure on these human 10X
+cells is what licenses reusing it: log2 load is bimodal pooled (Hartigan dip
+D = 0.049, p < 0.001), a two-component mixture beats one (BIC -2460 vs -3282)
+with component means at 1.2 and 70.6 UMIs, and the density trough falls at
+10.7 UMIs pooled and 8.5 in Collora alone. The shared cut sits inside that
+range. The two are not the same measurement -- Panel C's is Ca*Re UMIs in SIV,
+this axis is mostly 10X HXB2 UMIs in human -- so the shared number is a
+convention supported by the troughs coinciding, not by the scales being equal.
+
+Because it is a convention, the chunk checks it rather than assuming it: viral
+UMIs are swept as a `>= cut` rule for calling a viremic cell splice+, scored by
+Youden's J (sensitivity + specificity - 1), and the chunk prints J, sensitivity
+and specificity at the boundary next to what these cells alone would choose and
+the range of cuts within 0.01 J of that. max-F1 is not used: splice+ prevalence
+among the viremic HIV+ cells is low enough that F1 optimises precision and
+lands far up the load axis rather than where the two splice groups separate.
+
+Prerequisite for the boundary: the `tier_binary_load` chunk, which defines
+`tier_binload_cut`. The chunk stops rather than drawing a second, different
+boundary if it has not run.
+
+The HIV-seq arm is the Primer libraries only, because `public_maps$HIVseq`
+is filtered to `grepl("Primer$", ...)` in `public_load`, as everywhere else
+in this figure. The week0 NOTHING libraries are the chemistry control and are
+compared against Primer in SuppFigs.Rmd's `public_primer_vs_nothing` chunk,
+not here.
+
+Writes `PanelJ_loadVsSplice.pdf` and `PanelJ_loadVsSplice_stats.csv` to the
+Figure3 plot directory.
+Prerequisites: the `art_cells` and `viremic_cells` chunks.
+```{r panelJ_load_splice}
+output.dir <- paste0(plot.root, "Figure3/")
+dir.create(output.dir, recursive = TRUE, showWarnings = FALSE)
+
+# Cells in a splice group before a boxplot is drawn. 5 is where ggplot's
+# quantile(type = 7) hinges stop being interpolations and land on actual
+# observations again (Q1 = x[2], Q3 = x[4]); below it the box collapses
+# towards the range and restates the points with extra ink. No statistic
+# depends on this -- loadsplice_stats is computed over every cell either way,
+# and the jittered points show the whole group whether or not it gets a box.
+loadsplice_min_box <- 5
+
+# One arm of a per-cell table, restricted to the cells that arm called.
+loadsplice_arm <- function(df, arm, condition) {
+  tenx <- arm == "10X"
+  tibble(dataset         = df$dataset,
+         reference_group = df$reference_group,
+         condition       = condition,
+         arm             = arm,
+         called          = if (tenx) df$GEX_called  else df$CaRe_called,
+         viral_UMIs      = if (tenx) df$GEX_UMIs    else df$CaRe_UMIs,
+         splice_group    = ifelse(if (tenx) df$GEX_spliced else df$CaRe_spliced,
+                                  "splice+", "splice-")) %>%
+    filter(called) %>% select(-called)
+}
+
+loadsplice_cells <- bind_rows(
+  loadsplice_arm(viremic_cells, "10X",   "viremic"),
+  loadsplice_arm(art_cells,     "10X",   "ART"),
+  loadsplice_arm(art_cells,     "Ca*Re", "ART"))
+
+# Arms a dataset never ran call no cells, so they drop out here rather than
+# being listed by hand.
+loadsplice_labels <- c(Collora = "Collora", HIVseq = "HIV-seq", Giron = "Giron",
+                       `SIV D195` = "SIV D195")
+loadsplice_order <- c("Collora", "HIVseq", "Giron", "SIV D195")
+loadsplice_cells <- loadsplice_cells %>%
+  mutate(group = paste0(loadsplice_labels[dataset], "\n", arm),
+         dataset = factor(dataset, levels = loadsplice_order),
+         condition = factor(condition, levels = c("viremic", "ART"))) %>%
+  arrange(condition, dataset, arm) %>%
+  mutate(group = factor(group, levels = unique(group)),
+         splice_group = factor(splice_group, levels = c("splice-", "splice+")))
+
+# A called cell with no viral UMI would be dropped silently by the log axis.
+stopifnot(all(loadsplice_cells$viral_UMIs > 0))
+
+# splice+ rate against viral load, over the viremic cells of both datasets.
+# The rate is the load-vs-splicing summary to quote rather than the lowest
+# load of a splice+ cell: one such cell anywhere low on the axis fixes that
+# minimum, while the rate is computed over every cell in every bin. Bins
+# double in width so the axis is even on a log scale, as in the burden
+# panels above.
+loadsplice_bins <- c(0, 1, 2, 4, 8, 16, 32, 64, 128, Inf)
+loadsplice_bin_labels <- c("1", "2", "3-4", "5-8", "9-16", "17-32", "33-64",
+                           "65-128", ">128")
+loadsplice_rate <- loadsplice_cells %>%
+  filter(condition == "viremic") %>%
+  mutate(bin = cut(viral_UMIs, loadsplice_bins, labels = loadsplice_bin_labels)) %>%
+  group_by(group, bin) %>%
+  summarize(cells = n(), splice_pos = sum(splice_group == "splice+"),
+            rate = 100 * mean(splice_group == "splice+"), .groups = "drop") %>%
+  filter(cells > 0)
+cat("=== viremic splice+ rate by viral load bin ===\n")
+print(as.data.frame(loadsplice_rate %>% mutate(rate = round(rate, 1),
+        group = gsub("\n", " ", group))), row.names = FALSE)
+
+# Low/high viral load boundary, drawn as the dashed line. This is Panel C's
+# boundary, taken from `tier_binload_cut` rather than restated, so "high load"
+# means one thing across the figure and the two cannot drift apart. Panel C
+# sets it from the trough of a two-component Gaussian mixture on log2 load in
+# the SIV Ca*Re samples; the same procedure is run on these human 10X cells
+# below to check the shared cut against what this data alone would choose.
+stopifnot(exists("tier_binload_cut"))
+loadsplice_cut <- tier_binload_cut
+
+# The boundary is a convention shared with Panel C, so the chunk checks it
+# against what these cells alone would choose instead of assuming it. Viral
+# UMIs are swept as a `>= cut` rule for calling a viremic cell splice+ and
+# scored by Youden's J = sensitivity + specificity - 1. max-F1 is not used:
+# splice+ prevalence among viremic HIV+ cells is low enough that F1 optimises
+# precision and lands far up the load axis rather than where the two splice
+# groups separate.
+loadsplice_youden <- function(umis, spliced) {
+  purrr::map_dfr(sort(unique(umis)), function(k) {
+    call <- umis >= k
+    tibble(cut  = k,
+           sens = sum(call & spliced) / sum(spliced),
+           spec = sum(!call & !spliced) / sum(!spliced))
+  }) %>% mutate(youden = sens + spec - 1)
+}
+loadsplice_viremic <- loadsplice_cells %>% filter(condition == "viremic")
+loadsplice_sweep <- loadsplice_youden(loadsplice_viremic$viral_UMIs,
+                                      loadsplice_viremic$splice_group == "splice+")
+
+# The optimum is shallow, so the cuts within 0.01 J of it are reported with it:
+# the boundary marks where the groups separate, not a sharply identified value,
+# and that is what makes a cut shared with Panel C defensible here.
+loadsplice_plateau <- loadsplice_sweep$cut[
+  loadsplice_sweep$youden >= max(loadsplice_sweep$youden) - 0.01]
+loadsplice_best <- loadsplice_sweep[which.max(loadsplice_sweep$youden), ]
+loadsplice_at_cut <- loadsplice_sweep[loadsplice_sweep$cut == loadsplice_cut, ]
+cat(sprintf("=== low/high load boundary: >= %d viral UMIs (Panel C's tier_binload_cut) ===\n",
+            loadsplice_cut))
+cat(sprintf("  at the boundary      : Youden J = %.3f, sens = %.3f, spec = %.3f\n",
+            loadsplice_at_cut$youden, loadsplice_at_cut$sens, loadsplice_at_cut$spec))
+cat(sprintf("  these cells' own best: >= %d UMIs, J = %.3f (cuts within 0.01 J: %d-%d)\n",
+            loadsplice_best$cut, loadsplice_best$youden,
+            min(loadsplice_plateau), max(loadsplice_plateau)))
+cat(sprintf("  viremic splice+ cells at or above the boundary: %d of %d\n",
+            sum(loadsplice_viremic$viral_UMIs >= loadsplice_cut &
+                loadsplice_viremic$splice_group == "splice+"),
+            sum(loadsplice_viremic$splice_group == "splice+")))
+# Per-dataset optima, so a line set by the larger dataset does not hide the
+# other one disagreeing with it.
+print(as.data.frame(loadsplice_viremic %>% group_by(group) %>%
+  summarize(own_cut = {sw <- loadsplice_youden(viral_UMIs, splice_group == "splice+")
+                       sw$cut[which.max(sw$youden)]}, .groups = "drop") %>%
+  mutate(group = gsub("\n", " ", group))), row.names = FALSE)
+cat("  cells at or above the pooled boundary, by condition:\n")
+print(as.data.frame(loadsplice_cells %>% group_by(condition) %>%
+  summarize(at_or_above = sum(viral_UMIs >= loadsplice_cut), cells = n(),
+            .groups = "drop")), row.names = FALSE)
+
+loadsplice_stats <- loadsplice_cells %>%
+  group_by(condition, group) %>%
+  summarize(
+    n_pos      = sum(splice_group == "splice+"),
+    n_neg      = sum(splice_group == "splice-"),
+    max_UMIs   = max(viral_UMIs),
+    median_neg = median(viral_UMIs[splice_group == "splice-"]),
+    min_pos    = if (any(splice_group == "splice+"))
+                   min(viral_UMIs[splice_group == "splice+"]) else NA_real_,
+    # Share of splice- cells reaching the lowest load any splice+ cell of the
+    # same group carries: 0 means the two groups do not overlap in load at all.
+    pct_neg_at_min_pos = if (any(splice_group == "splice+") && any(splice_group == "splice-"))
+                   100 * mean(viral_UMIs[splice_group == "splice-"] >= min_pos) else NA_real_,
+    diff       = if (n_pos > 0 && n_neg > 0)
+                   mean(viral_UMIs[splice_group == "splice+"]) -
+                   mean(viral_UMIs[splice_group == "splice-"]) else NA_real_,
+    p          = if (n_pos > 0 && n_neg > 0)
+                   wilcox.test(viral_UMIs ~ splice_group)$p.value else NA_real_,
+    .groups = "drop")
+cat("=== viral UMIs per cell, splice+ vs splice- ===\n")
+print(as.data.frame(loadsplice_stats %>%
+  mutate(across(c(median_neg, min_pos, pct_neg_at_min_pos, diff), ~ round(.x, 2)),
+         p = signif(p, 2))), row.names = FALSE)
+
+cat("\nsplice+ cells on ART, by arm:\n")
+print(as.data.frame(loadsplice_cells %>% filter(condition == "ART") %>%
+  group_by(arm, dataset) %>%
+  summarize(called = n(), splice_pos = sum(splice_group == "splice+"),
+            max_UMIs = max(viral_UMIs), .groups = "drop")), row.names = FALSE)
+
+# Boxplots are drawn from a subset rather than suppressed by alpha, so a group
+# below the minimum has no box at all instead of an invisible one.
+loadsplice_drawable <- function(min_cells) {
+  loadsplice_cells %>% group_by(group, splice_group) %>%
+    filter(n() >= min_cells) %>% ungroup()
+}
+loadsplice_annot <- loadsplice_stats %>%
+  left_join(loadsplice_cells %>% group_by(condition, group) %>%
+              summarize(y = max(viral_UMIs), .groups = "drop"),
+            by = c("condition", "group")) %>%
+  mutate(label = ifelse(is.na(diff), "no splice+",
+                        sprintf("Δ = %.1f\np = %.2g", diff, p)))
+
+loadsplice_colors <- c("splice-" = "orange", "splice+" = "purple")
+loadsplice_dodge  <- position_dodge(width = 0.8)
+
+loadsplice_plot <- ggplot(loadsplice_cells,
+                          aes(x = group, y = viral_UMIs, fill = splice_group)) +
+  geom_hline(yintercept = loadsplice_cut, linetype = "dashed",
+             linewidth = 0.3, colour = "grey40") +
+  geom_boxplot(data = loadsplice_drawable(loadsplice_min_box),
+               position = loadsplice_dodge, width = 0.6, outlier.shape = NA,
+               linewidth = 0.25, alpha = 0.5) +
+  geom_point(aes(color = splice_group),
+             position = position_jitterdodge(jitter.width = 0.25, dodge.width = 0.8,
+                                             seed = 1),
+             size = 0.7, alpha = 0.7, show.legend = FALSE) +
+  geom_text(data = loadsplice_annot, aes(x = group, y = y, label = label),
+            inherit.aes = FALSE, vjust = -0.3, size = 2.4, lineheight = 0.9) +
+  facet_grid(. ~ condition, scales = "free_x", space = "free_x") +
+  scale_fill_manual(values = loadsplice_colors, name = NULL, drop = FALSE,
+                    limits = names(loadsplice_colors)) +
+  scale_color_manual(values = loadsplice_colors, guide = "none") +
+  scale_y_log10(expand = expansion(mult = c(0.04, 0.22))) +
+  labs(x = NULL, y = "viral UMIs per cell (log scale)",
+       subtitle = sprintf(paste("HIV/SIV RNA+ CD4 T cells; box at n >= 5 per splice",
+                                "group, points always\ndashed = low/high viral load",
+                                "boundary, %d UMIs (as Panel C)"),
+                          loadsplice_cut)) +
+  theme_classic(base_size = 9) +
+  theme(strip.background = element_blank(),
+        strip.text = element_text(face = "bold"),
+        legend.position = "bottom")
+
+# cairo_pdf: the default pdf device cannot encode the Delta in the annotations
+ggsave(paste0(output.dir, "PanelJ_loadVsSplice.pdf"), loadsplice_plot,
+       width = 7, height = 4.2, device = cairo_pdf)
+# The axis labels carry a newline so the arm sits under the dataset; that
+# newline has no business inside a CSV field.
+write.csv(loadsplice_stats %>% mutate(group = gsub("\n", " ", group)),
+          paste0(output.dir, "PanelJ_loadVsSplice_stats.csv"), row.names = FALSE)
+print(loadsplice_plot)
+```

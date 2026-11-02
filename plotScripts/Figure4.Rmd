@@ -1,0 +1,2642 @@
+---
+title: "Figure4"
+author: "Emanuelle Grody"
+date: "2026-03-26"
+output: html_document
+---
+
+All three sourced files sit in this directory, so the paths below are relative:
+knitr runs each chunk with the working directory set to the .Rmd's own location.
+`config.R` has to come between the other two -- it defines `data.root`,
+`plot.root`, `genome.root` and `public.root`, which `functions.R` uses in its
+default arguments and which every path in this notebook is built from.
+
+```{r, message=FALSE, warning=FALSE}
+source("packages.R")
+source("config.R")
+source("functions.R")
+```
+
+# SIV
+
+## Extraction
+
+### combined counts
+
+Prerequisites: `extractionScripts/submissionScripts/Figure4/stepThree_process_SIV.sh` and `extractionScripts/submissionScripts/Figure4/stepThree_process_SIV_TenX.sh`
+run after their stepTwo jobs, the Seurat UMAP coordinates, the barcode singlet
+table at threshold 4, and `GFP_invitro_CD4T_counts.csv` from
+`extractionScripts/submissionScripts/Figure4/stepFive_markers.sh`.
+
+```{r}
+care.dir      <- paste0(data.root, "Figure4/CaRe/bamsort/reads/")
+tenx.dir        <- paste0(data.root, "Figure4/singleCell/bamsort/reads/")
+barcode.dir    <- paste0(data.root, "Figure4/barcode/")
+umap.dir       <- paste0(data.root, "Figure4/singleCell/Seurat/UMAPcoords/")
+expression.dir <- paste0(data.root, "Figure4/singleCell/Seurat/expressionDF/")
+output.dir     <- paste0(data.root, "Figure4/combined/dataframes/")
+dir.create(output.dir, recursive = TRUE, showWarnings = FALSE)
+
+sample_name <- "GFP_invitro"
+tenx_sample  <- "GEX_GFP_invitro"
+
+# minimums
+process_all_set_minimums(mode = "CaRe", sample_list = sample_name,
+                           input_dir = care.dir, save_output = TRUE,
+                           output_dir = paste0(care.dir, "minimum/"),
+                           min_reads = 2, min_umi = 2)
+process_all_set_minimums(mode = "GEX", sample_list = tenx_sample,
+                           input_dir = tenx.dir, save_output = TRUE,
+                           output_dir = paste0(tenx.dir, "minimum/"),
+                           min_reads = 1, min_umi = 1)
+
+# Loading
+care_data   <- read.csv(paste0(care.dir, sample_name, "_UMI_read_counts_full.csv"))
+tenx_data     <- read.csv(paste0(tenx.dir, tenx_sample, "_UMI_read_counts_full.csv"))
+care_umi    <- read.csv(paste0(care.dir, "minimum/valid_UMI/", sample_name,
+                                "_CaRe_valid_cellID_UMI.csv"))
+tenx_umi      <- read.csv(paste0(tenx.dir, "minimum/valid_UMI/", tenx_sample,
+                                "_GEX_valid_cellID_UMI.csv"))
+umap_data    <- read.csv(paste0(umap.dir, sample_name, "UMAP_coords.csv"),
+                         row.names = "X")
+barcode_data <- read.csv(paste0(barcode.dir, "filtered_barcoded_cells_threshold4.csv"),
+                         row.names = "X")
+legacy_cd4   <- read.csv(paste0(expression.dir, sample_name, "_CD4T.csv"),
+                         row.names = "X")
+
+tenx_processed <- tenx_data %>%
+  mutate(cellID = as.character(cellID)) %>%
+  semi_join(tenx_umi, by = c("cellID", "UMI"))
+care_processed <- care_data %>%
+  mutate(cellID = as.character(cellID)) %>%
+  semi_join(care_umi, by = c("cellID", "UMI"))
+
+full_processed <- full_join(tenx_processed, care_processed,
+                            by = c("cellID", "UMI"),
+                            relationship = "many-to-many") %>%
+  resolve_multimap_gs() %>%
+  count(cellID, category) %>%
+  pivot_wider(names_from = category, values_from = n, values_fill = 0) %>%
+  mutate(total = log1p(rowSums(select(., -cellID), na.rm = TRUE)))
+
+result <- data.frame(cellID = unique(as.character(umap_data$cellID))) %>%
+  left_join(umap_data %>% select(-any_of("V2"), -sample), by = "cellID") %>%
+  left_join(barcode_data, by = "cellID") %>%
+  left_join(full_processed, by = "cellID")
+result$barcode[is.na(result$barcode)] <- "none"
+result[is.na(result)] <- 0
+
+# Cell type filtering
+legacy_keep <- legacy_cd4 %>%
+  transmute(cellID        = as.character(cellID),
+            CD4_signature = as.integer(IL7R > 0 | LCK > 0 | LEF1 > 0 | TCF7 > 0),
+            CD8           = as.integer(CD8A > 0 | CD8B > 0)) %>%
+  filter(CD4_signature == 0 | CD8 == 0) %>%
+  pull(cellID)
+result <- result %>% filter(cellID %in% legacy_keep)
+combined_data <- result %>%
+  left_join(cd4t_gate_table(sample_name, expression.dir = expression.dir),
+            by = "cellID")
+
+# Saving
+write.csv(combined_data, paste0(output.dir, sample_name, "_all_gated.csv"),
+          row.names = FALSE)
+
+cat(sprintf("%s: %d cells | %d CD4 T | %d excluded by a lineage marker\n",
+            sample_name, nrow(combined_data),
+            sum(combined_data$cd4t %in% TRUE),
+            sum(combined_data$excluded %in% TRUE)))
+cat(sprintf("SIV+ (total > 0): %d ungated | %d inside the CD4 T gate\n",
+            sum(combined_data$total > 0),
+            sum(combined_data$total > 0 & combined_data$cd4t %in% TRUE)))
+```
+
+# Barcode
+## Extraction
+
+### Panel C abundance
+
+Prerequisites: the barcode `stepThree` and `stepFour` tables under
+`Figure4/barcode/`.
+
+```{r}
+base.dir    <- paste0(data.root, "Figure4/barcode/stepThree/")
+singlet.dir <- paste0(data.root, "Figure4/barcode/stepFour/")
+umap.dir    <- paste0(data.root, "Figure4/singleCell/Seurat/UMAPcoords/")
+output.dir  <- paste0(data.root, "Figure4/barcode/")
+dir.create(output.dir, recursive = TRUE, showWarnings = FALSE)
+
+side_reactions <- c("GFP_barcode_1", "GFP_barcode_9")
+
+UMAP_data <- read.csv(paste0(umap.dir, "GFP_invitro_GFP.csv"),
+                      row.names = "X") %>%
+  select(cellID, UMAP1, UMAP2, cluster, size)
+
+singlet_1 <- read.csv(paste0(singlet.dir, "GFP_barcode_1__singlets_all.txt"),
+                      col.names = "cellID")
+singlet_9 <- read.csv(paste0(singlet.dir, "GFP_barcode_9__singlets_all.txt"),
+                      col.names = "cellID")
+singlet_data <- data.frame(cellID = union(singlet_1$cellID, singlet_9$cellID)) %>%
+  mutate(cellID = paste0(cellID, "-1"))
+
+abundance_per_threshold <- bind_rows(lapply(0:5, function(thr) {
+  barcodeData <- list()
+  for (i in side_reactions) {
+    temp <- read.delim(file.path(base.dir, i, "stepThreeStarcodeShavedReads.txt"))
+    barcodeData[[i]] <- temp %>% mutate(cellID = paste0(cellID, "-1")) %>%
+      select(cellID, UMI, BC50StarcodeD8) %>%
+      filter(cellID %in% singlet_data$cellID) %>%
+      filter(cellID %in% UMAP_data$cellID) %>%
+      count(cellID, BC50StarcodeD8, name = "count") %>%
+      filter(count > thr)
+  }
+  lib1 <- barcodeData[[1]] %>% count(BC50StarcodeD8, name = "lib1_abundance")
+  lib2 <- barcodeData[[2]] %>% count(BC50StarcodeD8, name = "lib2_abundance")
+  inner_join(lib1, lib2, by = "BC50StarcodeD8") %>%
+    mutate(threshold = thr)
+}))
+
+write.csv(abundance_per_threshold,
+          paste0(output.dir, "figure4_panelC_abundance.csv"),
+          row.names = FALSE)
+```
+
+### Panel E distances + clone coherence setup
+
+Prerequisites: the `GFP_invitro` Seurat RDS under
+`Figure4/singleCell/Seurat/RDS/`, and the barcode `stepFour` singlet table.
+
+```{r}
+rds.dir <- paste0(data.root, "Figure4/singleCell/Seurat/RDS/")
+seurat_obj <- readRDS(paste0(rds.dir, "GFP_invitro.rds"))
+
+combined.dir  <- paste0(data.root, "Figure4/combined/")
+combined_data <- read.csv(paste0(combined.dir, "dataframes/GFP_invitro_all_gated.csv"))
+
+barcode_map <- combined_data %>% select(cellID, barcode) %>% distinct()
+seurat_obj@meta.data$cellID <- rownames(seurat_obj@meta.data)
+seurat_obj@meta.data <- seurat_obj@meta.data %>%
+  left_join(barcode_map, by = "cellID")
+rownames(seurat_obj@meta.data) <- seurat_obj@meta.data$cellID
+
+barcode_counts <- seurat_obj@meta.data %>%
+  filter(barcode != "none") %>%
+  count(barcode, name = "clone_size")
+seurat_obj@meta.data <- seurat_obj@meta.data %>%
+  left_join(barcode_counts, by = "barcode") %>%
+  mutate(
+    clone_size     = ifelse(barcode == "none", NA_integer_, clone_size),
+    is_singleton   = clone_size == 1,
+    barcode_status = case_when(
+      barcode == "none" ~ "unbarcoded",
+      clone_size == 1   ~ "singleton",
+      clone_size > 1    ~ "clone"
+    )
+  )
+rownames(seurat_obj@meta.data) <- seurat_obj@meta.data$cellID
+```
+
+### Panel E distances
+
+Prerequisites: the `### Panel E distances + clone coherence setup` chunk above.
+
+```{r}
+pair_dist <- function(pairs, pca) {
+  sqrt(rowSums((pca[pairs[,1],] - pca[pairs[,2],])^2))
+}
+
+compute_distance_df <- function(seurat_obj, restrict_cluster = NULL,
+                                n_pairs = 2000, seed = 42) {
+  set.seed(seed)
+
+  if (is.null(restrict_cluster)) {
+    sub <- subset(seurat_obj, barcode_status %in% c("singleton", "clone"))
+  } else {
+    sub <- subset(seurat_obj, seurat_clusters == restrict_cluster &
+                              barcode_status %in% c("singleton", "clone"))
+  }
+
+  pca <- Embeddings(sub, "pca")[, 1:REDUCTION_DIMENSIONS]
+  meta_sub <- sub@meta.data
+  is_sing  <- meta_sub$is_singleton
+
+  sing_idx  <- which(is_sing)
+  clone_idx <- which(!is_sing)
+
+  clone_barcodes <- meta_sub$barcode[clone_idx]
+  bc_counts <- table(clone_barcodes)
+  eligible_bcs <- names(bc_counts[bc_counts >= 2])
+
+  within_pairs <- matrix(NA, nrow = n_pairs, ncol = 2)
+  for (k in seq_len(n_pairs)) {
+    bc <- sample(eligible_bcs, 1)
+    members <- clone_idx[clone_barcodes == bc]
+    picked <- sample(members, 2, replace = FALSE)
+    within_pairs[k,] <- picked
+  }
+  d_within <- pair_dist(within_pairs, pca)
+
+  between_pairs <- matrix(NA, nrow = n_pairs, ncol = 2)
+  for (k in seq_len(n_pairs)) {
+    i <- sample(clone_idx, 1)
+    j <- sample(clone_idx, 1)
+    while (meta_sub$barcode[j] == meta_sub$barcode[i]) {
+      j <- sample(clone_idx, 1)
+    }
+    between_pairs[k,] <- c(i, j)
+  }
+  d_between <- pair_dist(between_pairs, pca)
+
+  ss_pairs <- matrix(NA, nrow = n_pairs, ncol = 2)
+  for (k in seq_len(n_pairs)) {
+    picked <- sample(sing_idx, 2, replace = TRUE)
+    while (picked[1] == picked[2]) {
+      picked <- sample(sing_idx, 2, replace = TRUE)
+    }
+    ss_pairs[k,] <- picked
+  }
+  d_ss <- pair_dist(ss_pairs, pca)
+
+  cs_pairs <- cbind(
+    sample(clone_idx, n_pairs, replace = TRUE),
+    sample(sing_idx,  n_pairs, replace = TRUE)
+  )
+  d_cs <- pair_dist(cs_pairs, pca)
+
+  all_idx <- seq_len(nrow(pca))
+  rand_pairs <- matrix(NA, nrow = n_pairs, ncol = 2)
+  for (k in seq_len(n_pairs)) {
+    rand_pairs[k,] <- sample(all_idx, 2)
+  }
+  d_rand <- pair_dist(rand_pairs, pca)
+
+  cat("Within-clone:       ", round(mean(d_within),  3), "+/-", round(sd(d_within),  3), "\n")
+  cat("Between-clone:      ", round(mean(d_between), 3), "+/-", round(sd(d_between), 3), "\n")
+  cat("Singleton-Singleton:", round(mean(d_ss),      3), "+/-", round(sd(d_ss),      3), "\n")
+  cat("Clone-Singleton:    ", round(mean(d_cs),      3), "+/-", round(sd(d_cs),      3), "\n")
+  cat("Random:             ", round(mean(d_rand),    3), "+/-", round(sd(d_rand),    3), "\n")
+
+  dist_df <- data.frame(
+    distance   = c(d_within, d_between, d_ss, d_cs, d_rand),
+    comparison = rep(c("Within-clone", "Between-clone",
+                       "Singleton-Singleton", "Clone-Singleton", "Random"),
+                     each = n_pairs)
+  )
+  dist_df$comparison <- factor(dist_df$comparison,
+                                levels = c("Within-clone", "Between-clone",
+                                           "Singleton-Singleton",
+                                           "Clone-Singleton", "Random"))
+  dist_df
+}
+
+barcode.dir <- paste0(data.root, "Figure4/barcode/")
+dir.create(barcode.dir, recursive = TRUE, showWarnings = FALSE)
+
+dist_all <- compute_distance_df(seurat_obj, restrict_cluster = NULL)
+write.csv(dist_all, paste0(barcode.dir, "figure4_panelE_dist_all.csv"),
+          row.names = FALSE)
+
+dist_c1 <- compute_distance_df(seurat_obj, restrict_cluster = 1)
+write.csv(dist_c1, paste0(barcode.dir, "figure4_panelE_dist_c1.csv"),
+          row.names = FALSE)
+```
+
+### Panel H: ICC
+
+Prerequisites: the `### Panel E distances + clone coherence setup` chunk above
+(`seurat_obj` with `barcode` and `clone_size`).
+
+ICC is the per-gene intraclass correlation from a one-way random effects model
+with clone as the random effect: the fraction of a gene's variance that sits
+between clones rather than within them.
+
+```{r}
+set.seed(42)
+
+MIN_DETECTION       <- 0.05   # gene must be detected in >= 5% of clone cells
+N_ICC_PERMUTATIONS  <- 100    # clone-label shuffles for each ICC null
+ICC_MIN             <- 0.10   # effect-size floor: >= 10% of variance between clones
+
+barcode.dir <- paste0(data.root, "Figure4/barcode/")
+coherence.dir <- paste0(barcode.dir, "coherence_alternatives/")
+dir.create(coherence.dir, recursive = TRUE, showWarnings = FALSE)
+
+clone_meta <- seurat_obj@meta.data %>%
+  filter(!is.na(barcode), barcode != "none", clone_size >= 2)
+
+clone_cells   <- clone_meta$cellID
+clone_id      <- factor(clone_meta$barcode)
+clone_cluster <- factor(clone_meta$seurat_clusters)
+
+cat("Clones with >= 2 cells:", nlevels(clone_id),
+    "| cells in those clones:", length(clone_cells),
+    "| clusters:", nlevels(clone_cluster), "\n")
+
+expression_sparse <- GetAssayData(seurat_obj, layer = "data")[, clone_cells]
+
+detection_rate_clone <- Matrix::rowMeans(expression_sparse > 0)
+coherence_genes <- names(detection_rate_clone)[detection_rate_clone >= MIN_DETECTION]
+
+clone_expression <- as.matrix(expression_sparse[coherence_genes, , drop = FALSE])
+rm(expression_sparse); gc()
+
+compute_icc <- function(expr, groups) {
+  n_total  <- ncol(expr)
+  n_groups <- nlevels(groups)
+  group_n  <- as.numeric(table(groups))
+
+  indicator   <- Matrix::sparse.model.matrix(~ groups - 1)
+  group_sums  <- as.matrix(expr %*% indicator)
+  group_means <- sweep(group_sums, 2, group_n, "/")
+
+  grand_mean <- rowMeans(expr)
+  ss_total   <- rowSums(expr^2) - n_total * grand_mean^2
+  ss_between <- rowSums(sweep(group_means^2, 2, group_n, "*")) -
+                n_total * grand_mean^2
+  ss_within  <- ss_total - ss_between
+
+  ss_between[ss_between < 0] <- 0
+  ss_within[ss_within  < 0]  <- 0
+
+  ms_between <- ss_between / (n_groups - 1)
+  ms_within  <- ss_within  / (n_total - n_groups)
+
+  n0 <- (n_total - sum(group_n^2) / n_total) / (n_groups - 1)
+
+  icc <- (ms_between - ms_within) / (ms_between + (n0 - 1) * ms_within)
+  icc[!is.finite(icc)] <- NA_real_
+
+  f_stat <- ms_between / ms_within
+  f_stat[!is.finite(f_stat)] <- NA_real_
+
+  list(icc      = icc,
+       f_stat   = f_stat,
+       f_pvalue = pf(f_stat, df1 = n_groups - 1, df2 = n_total - n_groups,
+                     lower.tail = FALSE))
+}
+
+icc_observed <- compute_icc(clone_expression, clone_id)
+
+# The global null shuffles clone labels across all clone cells. It destroys
+# clone identity and cluster composition together, so a gene scores against it
+# whenever clonemates resemble each other for any reason (e.g. cell type).
+#
+# The cluster-matched null permutes labels only among cells within the same
+# Seurat cluster. Thus the only thing scrambled is which particular cells are
+# clonemates. A gene that survives this null is coherent beyond what
+# shared cell state explains.
+permute_within_strata <- function(labels, strata) {
+  shuffled <- labels
+  for (level in levels(strata)) {
+    idx <- which(strata == level)
+    if (length(idx) > 1) shuffled[idx] <- sample(labels[idx])
+  }
+  shuffled
+}
+
+run_icc_null <- function(permute_fun) {
+  null_matrix <- matrix(NA_real_, nrow = nrow(clone_expression),
+                        ncol = N_ICC_PERMUTATIONS,
+                        dimnames = list(rownames(clone_expression), NULL))
+  for (i in seq_len(N_ICC_PERMUTATIONS)) {
+    null_matrix[, i] <- compute_icc(clone_expression,
+                                    factor(permute_fun()))$icc
+  }
+  null_matrix
+}
+
+icc_null <- run_icc_null(function() sample(clone_id))
+icc_cluster_null <- run_icc_null(function()
+  permute_within_strata(clone_id, clone_cluster))
+
+summarise_null <- function(null_matrix) {
+  null_mean <- rowMeans(null_matrix, na.rm = TRUE)
+  null_sd   <- matrixStats::rowSds(null_matrix, na.rm = TRUE)
+  zscore    <- (icc_observed$icc - null_mean) / null_sd
+  zscore[!is.finite(zscore)] <- NA_real_
+  list(mean   = null_mean,
+       zscore = zscore,
+       pvalue = rowSums(null_matrix >= icc_observed$icc, na.rm = TRUE) /
+                N_ICC_PERMUTATIONS)
+}
+
+icc_global_summary  <- summarise_null(icc_null)
+icc_cluster_summary <- summarise_null(icc_cluster_null)
+
+coherence_df <- data.frame(
+  gene                    = rownames(clone_expression),
+  detection_rate          = detection_rate_clone[rownames(clone_expression)],
+  icc                     = icc_observed$icc,
+  icc_f_pvalue            = icc_observed$f_pvalue,
+  icc_null_mean           = icc_global_summary$mean,
+  icc_zscore              = icc_global_summary$zscore,
+  icc_perm_pvalue         = icc_global_summary$pvalue,
+  icc_cluster_null_mean   = icc_cluster_summary$mean,
+  icc_cluster_zscore      = icc_cluster_summary$zscore,
+  icc_cluster_pvalue      = icc_cluster_summary$pvalue,
+  stringsAsFactors = FALSE
+)
+
+coherence_df$icc_f_padj       <- p.adjust(coherence_df$icc_f_pvalue,       method = "BH")
+coherence_df$icc_perm_padj    <- p.adjust(coherence_df$icc_perm_pvalue,    method = "BH")
+coherence_df$icc_cluster_padj <- p.adjust(coherence_df$icc_cluster_pvalue, method = "BH")
+
+
+coherence_df$icc_coherent <- !is.na(coherence_df$icc_perm_padj) &
+                             coherence_df$icc_perm_padj < 0.05 &
+                             coherence_df$icc >= ICC_MIN
+
+coherence_df$icc_coherent_cluster <- !is.na(coherence_df$icc_cluster_padj) &
+                                     coherence_df$icc_cluster_padj < 0.05 &
+                                     coherence_df$icc >= ICC_MIN
+
+coherence_df$icc_excess <- coherence_df$icc - coherence_df$icc_cluster_null_mean
+coherence_df$icc_state_fraction <- coherence_df$icc_cluster_null_mean /
+                                   coherence_df$icc
+coherence_df$icc_state_fraction[!is.finite(coherence_df$icc_state_fraction)] <-
+  NA_real_
+
+write.csv(coherence_df, paste0(coherence.dir, "figure4_panelH_icc.csv"),
+          row.names = FALSE)
+saveRDS(list(global = icc_null, cluster = icc_cluster_null),
+        paste0(coherence.dir, "figure4_panelH_icc_null.rds"))
+
+cat("ICC coherent, global null (FDR < 0.05 & ICC >=", ICC_MIN, "):",
+    sum(coherence_df$icc_coherent), "\n")
+cat("ICC coherent, cluster-matched null:",
+    sum(coherence_df$icc_coherent_cluster), "\n")
+
+cat("\nMedian ICC under each null: global",
+    round(median(coherence_df$icc_null_mean, na.rm = TRUE), 4),
+    "| cluster-matched",
+    round(median(coherence_df$icc_cluster_null_mean, na.rm = TRUE), 4),
+    "| observed", round(median(coherence_df$icc, na.rm = TRUE), 4), "\n")
+
+cat("Median fraction of ICC attributable to cluster structure, coherent genes:",
+    round(median(coherence_df$icc_state_fraction[coherence_df$icc_coherent],
+                 na.rm = TRUE), 3), "\n")
+
+cat("\nMost lineage-specific coherent genes (largest ICC excess over the",
+    "cluster-matched null):\n")
+print(coherence_df %>%
+        filter(icc_coherent) %>%
+        arrange(desc(icc_excess)) %>%
+        select(gene, icc, icc_cluster_null_mean, icc_excess, icc_state_fraction) %>%
+        head(15))
+```
+
+
+## Plotting
+
+Prerequisites: the `## Extraction` chunks above, and the memoryseq tables
+under `LD002/memoryseq/`.
+
+Data loading.
+
+```{r}
+barcode.dir   <- paste0(data.root, "Figure4/barcode/")
+combined.dir  <- paste0(data.root, "Figure4/combined/")
+memoryseq.dir <- paste0(data.root, "LD002/memoryseq/")
+
+abundance_per_threshold <- read.csv(paste0(barcode.dir, "figure4_panelC_abundance.csv"))
+combined_data           <- read.csv(paste0(combined.dir, "dataframes/GFP_invitro_all_gated.csv"))
+dist_all                <- read.csv(paste0(barcode.dir, "figure4_panelE_dist_all.csv"))
+dist_c1                 <- read.csv(paste0(barcode.dir, "figure4_panelE_dist_c1.csv"))
+heritable_df            <- read.csv(paste0(memoryseq.dir, "potential_heritable_genes_filtered.csv"))
+
+coherence.dir      <- paste0(barcode.dir, "coherence_alternatives/")
+coherence_df       <- read.csv(paste0(coherence.dir, "figure4_panelH_icc.csv"))
+icc_null           <- readRDS(paste0(coherence.dir, "figure4_panelH_icc_null.rds"))
+
+# Factor levels do not survive a CSV round-trip.
+dist_levels <- c("Within-clone", "Between-clone",
+                 "Singleton-Singleton", "Clone-Singleton", "Random")
+dist_all$comparison <- factor(dist_all$comparison, levels = dist_levels)
+dist_c1$comparison  <- factor(dist_c1$comparison,  levels = dist_levels)
+
+output.dir      <- paste0(plot.root, "Figure4/")
+supp_output.dir <- paste0(plot.root, "Supplemental/SuppFig4/")
+dir.create(output.dir,      recursive = TRUE, showWarnings = FALSE)
+dir.create(supp_output.dir, recursive = TRUE, showWarnings = FALSE)
+```
+
+
+### Panel C
+
+Prerequisites: the `### Panel C abundance` chunk above.
+
+```{r}
+plot_list <- lapply(sort(unique(abundance_per_threshold$threshold)), function(thr) {
+  abundance <- abundance_per_threshold %>% filter(threshold == thr)
+  r_squared <- cor(abundance$lib1_abundance, abundance$lib2_abundance)^2
+
+  ggplot(abundance, aes(x = lib2_abundance, y = lib1_abundance)) +
+    geom_bin2d() +
+    scale_fill_gradientn(colors = c("black", "blue", "purple", "red", "yellow"),
+                         name = "Number of\nBarcodes",
+                         trans = "log10") +
+    geom_abline(slope = 1, intercept = 0, linetype = "dashed", color = "grey50") +
+    scale_x_log10() +
+    scale_y_log10() +
+    annotate("text", x = Inf, y = Inf, hjust = 1.1, vjust = 1.5,
+             label = paste0("R^2 == ", round(r_squared, 3)), parse = TRUE) +
+    labs(x = "Barcode abundance\nlibrary 2",
+         y = "Barcode abundance\nlibrary 1",
+         title = paste0("threshold > ", thr)) +
+    coord_fixed(ratio = 1) +
+    theme_classic(base_size = 10) +
+    theme(plot.title = element_text(hjust = 0.5))
+})
+
+combined <- wrap_plots(plot_list, nrow = 1)
+ggsave(paste0(output.dir, "PanelC_barcode_overlap_thresholds.pdf"),
+       combined, width = 4 * length(plot_list), height = 4)
+```
+
+### Panel D: barcode UMAPs
+
+Prerequisites: the `## Plotting` data-loading chunk above (`combined_data`).
+
+UMAP coordinates, leiden cluster, and lineage barcode all come straight from
+`combined_data`. Clone size is the number of cells sharing a barcode; unbarcoded
+("none") cells get NA and form the gray background in the clone panels.
+
+```{r}
+umap_dataframe <- combined_data %>%
+  select(cellID, UMAP1, UMAP2, cluster, barcode) %>%
+  mutate(cluster = factor(cluster))
+
+clone_sizes <- umap_dataframe %>%
+  filter(barcode != "none") %>%
+  count(barcode, name = "clone_size")
+
+umap_dataframe <- umap_dataframe %>%
+  left_join(clone_sizes, by = "barcode") %>%
+  mutate(clone_size = ifelse(barcode == "none", NA_integer_, clone_size))
+
+singletons <- umap_dataframe %>% filter(clone_size == 1)
+
+# Shared base styling and a faint all-cell background layer.
+style_umap <- function(plot, title) {
+  plot +
+    coord_fixed() +
+    theme_classic() +
+    theme(axis.text = element_blank(),
+          axis.ticks = element_blank()) +
+    labs(x = "UMAP1", y = "UMAP2", title = title)
+}
+
+background_layer <- function() {
+  geom_point(data = umap_dataframe, aes(UMAP1, UMAP2),
+             color = "gray85", size = 0.4, shape = 16)
+}
+
+# 1. Color by leiden cluster.
+plot_clusters <- style_umap(
+  ggplot(umap_dataframe, aes(UMAP1, UMAP2, color = cluster)) +
+    geom_point(size = 0.5, shape = 16) +
+    scale_color_brewer(palette = "Set2", name = "Leiden\ncluster"),
+  "Leiden clusters")
+
+# Color cells in clones of size >= minimum_size by clone identity (relabeled
+# clone 1..N by descending size); every other cell stays gray. Legend is shown
+# only when there are few enough clones to read it.
+plot_clones_min_size <- function(minimum_size, title, show_legend = FALSE) {
+  highlight <- umap_dataframe %>%
+    filter(!is.na(clone_size), clone_size >= minimum_size)
+  clone_order <- highlight %>%
+    count(barcode, name = "size") %>%
+    arrange(desc(size))
+  ordered_barcodes <- clone_order$barcode
+  clone_labels <- sprintf("clone %d (n=%d)",
+                          seq_along(ordered_barcodes), clone_order$size)
+  highlight <- highlight %>%
+    mutate(clone = factor(barcode, levels = ordered_barcodes,
+                          labels = clone_labels))
+
+  plot <- ggplot() +
+    background_layer() +
+    geom_point(data = highlight, aes(UMAP1, UMAP2, color = clone),
+               size = 0.8, shape = 16) +
+    guides(color = if (show_legend) guide_legend(override.aes = list(size = 2))
+                   else "none")
+  if (!show_legend) plot <- plot + scale_color_discrete(guide = "none")
+  style_umap(plot, sprintf("%s  (%d clones, %d cells)",
+                           title, length(ordered_barcodes), nrow(highlight)))
+}
+
+# 2. All clones size >= 2 (too many clones for a legend).
+plot_clones_ge2 <- plot_clones_min_size(2, "Clones (size >= 2)",
+                                        show_legend = FALSE)
+
+# 3. All clones size > 50.
+plot_clones_ge50 <- plot_clones_min_size(51, "Clones (size > 50)",
+                                         show_legend = TRUE)
+
+# 4. All singletons in a single gray.
+plot_singletons <- style_umap(
+  ggplot() +
+    background_layer() +
+    geom_point(data = singletons, aes(UMAP1, UMAP2),
+               color = "gray30", size = 0.6, shape = 16),
+  sprintf("Singletons (n = %d)", nrow(singletons)))
+
+# 5. Density of singletons with filled density + contour lines.
+plot_singleton_density <- style_umap(
+  ggplot(singletons, aes(UMAP1, UMAP2)) +
+    geom_point(data = umap_dataframe, aes(UMAP1, UMAP2),
+               color = "gray90", size = 0.4, shape = 16) +
+    geom_density_2d_filled(alpha = 0.6) +
+    geom_density_2d(color = "gray20", linewidth = 0.2) +
+    scale_fill_viridis_d(name = "Density"),
+  sprintf("Singleton density (n = %d)", nrow(singletons)))
+
+plot_list <- list(plot_clusters, plot_clones_ge2, plot_clones_ge50,
+                  plot_singletons, plot_singleton_density)
+file_names <- c("PanelD_UMAP_clusters.pdf",
+                "PanelD_UMAP_clones_ge2.pdf",
+                "PanelD_UMAP_clones_ge50.pdf",
+                "PanelD_UMAP_singletons.pdf",
+                "PanelD_UMAP_singleton_density.pdf")
+for (i in seq_along(plot_list)) {
+  ggsave(paste0(output.dir, file_names[i]), plot_list[[i]],
+         width = 5, height = 5)
+  print(plot_list[[i]])
+}
+
+combined_umaps <- wrap_plots(plot_list, nrow = 1)
+ggsave(paste0(output.dir, "PanelD_UMAP_barcode_combined.pdf"),
+       combined_umaps, width = 5 * length(plot_list), height = 5)
+```
+
+### Panel E and Supp Fig 4A
+
+Prerequisites: the `### Panel E distances` chunk above.
+
+```{r}
+
+# Plot only the requested comparison categories, with a Wilcoxon test drawn
+# between every pairing of them (all pairwise combinations).
+plot_distance_violins <- function(dist_df, categories, output_path) {
+  df <- dist_df %>%
+    filter(comparison %in% categories) %>%
+    mutate(comparison = factor(comparison, levels = categories))
+  comparisons_list <- combn(categories, 2, simplify = FALSE)
+
+  p <- ggplot(df, aes(x = comparison, y = distance)) +
+    geom_violin(fill = "gray80") +
+    geom_boxplot(width = 0.1) +
+    stat_compare_means(comparisons = comparisons_list,
+                       method = "wilcox.test",
+                       label = "p.signif",
+                       step.increase = 0.08) +
+    theme_classic() +
+    labs(x = "", y = "Euclidean distance (PCA space)") +
+    theme(axis.text.x = element_text(angle = 25, hjust = 1))
+
+  ggsave(output_path, p)
+  print(p)
+  invisible(p)
+}
+
+# Clonal lineage: within-barcode vs between-barcode vs random.
+plot_distance_violins(dist_all,
+                      c("Within-clone", "Between-clone", "Random"),
+                      paste0(output.dir, "PanelE_edist_violins_clone.pdf"))
+
+# Singleton context: singleton-singleton vs clone-singleton vs random.
+plot_distance_violins(dist_all,
+                      c("Singleton-Singleton", "Clone-Singleton", "Random"),
+                      paste0(supp_output.dir, "PanelA_edist_violins_singleton.pdf"))
+# plot_distance_violins(dist_c1, c("Within-clone", "Between-clone", "Random"),
+#                       paste0(supp_output.dir, "PanelESupp_edist_violins_cluster1.pdf"))
+```
+
+### Panel H: ICC
+
+Prerequisites: the data loading chunk
+
+```{r}
+ICC_MIN     <- 0.10   # must match the ICC extraction chunk
+ICC_FDR_MAX <- 0.05
+
+icc_plot_df <- coherence_df %>% filter(!is.na(icc), !is.na(icc_zscore))
+
+n_top_labels <- 25
+genes_to_label <- c("IL7R",
+                    "APOBEC3G", "APOBEC3H", "SAMHD1",
+                    "BST2", "SERINC5", "SERINC3", "MX2",      # restriction factors
+                    "CD4", "CCR5", "CCNT1", "NFKB1", "RELA",
+                    "PSIP1", "SP1", "CDK9")                   # host factors
+
+top_coherent_genes <- icc_plot_df %>%
+  filter(icc_coherent) %>%
+  arrange(desc(icc)) %>%
+  head(n_top_labels) %>%
+  pull(gene)
+
+label_genes <- union(top_coherent_genes, genes_to_label)
+label_df    <- icc_plot_df %>% filter(gene %in% label_genes)
+
+# The permutation p-value is floored at 1 / N_ICC_PERMUTATIONS and the coherent
+# genes all sit on that floor, so significance is drawn as the permutation
+# z-score, which stays continuous. The vertical line is the ICC effect-size
+# floor; a called gene must be right of it and significant against the null.
+p_icc <- ggplot(icc_plot_df, aes(x = icc, y = icc_zscore)) +
+  geom_point(aes(color = icc_coherent), size = 0.5, alpha = 0.4) +
+  geom_vline(xintercept = ICC_MIN, linetype = "dashed", color = "gray40") +
+  geom_text_repel(data = label_df, aes(label = gene),
+                  size = 2.5, max.overlaps = 20, segment.size = 0.3,
+                  min.segment.length = 0, box.padding = 0.3) +
+  scale_color_manual(values = c("TRUE" = "#EC008C", "FALSE" = "gray70"),
+                     labels = c("TRUE" = "Coherent", "FALSE" = "Not called")) +
+  theme_classic() +
+  theme(aspect.ratio = 1) +
+  labs(
+    x = "Clone ICC (fraction of variance between clones)",
+    y = "Permutation z-score (clone-label shuffle null)",
+    title = "Clonal coherence of gene expression",
+    subtitle = sprintf("Coherent: permutation FDR < %.2f & ICC >= %.2f (%d/%d genes)",
+                       ICC_FDR_MAX, ICC_MIN,
+                       sum(icc_plot_df$icc_coherent),
+                       nrow(icc_plot_df)),
+    color = ""
+  )
+print(p_icc)
+ggsave(p_icc, file = paste0(output.dir, "PanelH_icc.pdf"),
+       device = "pdf", width = 6, height = 6)
+```
+
+### Panel J: heritable vs ICC-coherent genes
+
+Prerequisites: data-loading chunk, ICC extraction chunk, and run the following:
+
+    submissionScripts/Figure4/memoryseq_nfcore_rnaseq.sh
+    submissionScripts/Figure4/memoryseq_variability.sh
+
+
+```{r}
+set.seed(42)
+
+N_OVERLAP_PERMUTATIONS <- 10000
+N_DETECTION_BINS       <- 10
+
+heritable_genes  <- unique(heritable_df$GeneSymbol)
+icc_universe     <- coherence_df$gene
+icc_coherent_set <- coherence_df$gene[coherence_df$icc_coherent]
+heritable_tested <- intersect(heritable_genes, icc_universe)
+
+observed_overlap <- length(intersect(icc_coherent_set, heritable_tested))
+
+N <- length(icc_universe)
+K <- length(icc_coherent_set)
+n <- length(heritable_tested)
+
+cat(sprintf("Universe %d | ICC-coherent %d | heritable %d | overlap %d\n",
+            N, K, n, observed_overlap))
+
+# Note: clonal expansion is human (GRCh38) and barcode is macaque (Mmul_10)
+cat(sprintf("LD002 heritable genes: %d called, %d in the ICC universe (%d dropped)\n",
+            length(heritable_genes), n, length(heritable_genes) - n))
+
+detection_bin <- cut(coherence_df$detection_rate,
+                     breaks = quantile(coherence_df$detection_rate,
+                                       probs = seq(0, 1, length.out = N_DETECTION_BINS + 1),
+                                       na.rm = TRUE),
+                     include.lowest = TRUE, labels = FALSE)
+names(detection_bin) <- coherence_df$gene
+
+genes_by_bin  <- split(coherence_df$gene, detection_bin)
+heritable_bin_counts <- table(factor(detection_bin[heritable_tested],
+                                     levels = seq_len(N_DETECTION_BINS)))
+
+cat("Heritable genes per detection decile:",
+    paste(as.vector(heritable_bin_counts), collapse = " "), "\n")
+
+sample_matched <- function() {
+  unlist(lapply(seq_len(N_DETECTION_BINS), function(b) {
+    k <- heritable_bin_counts[[b]]
+    if (k == 0) return(character(0))
+    sample(genes_by_bin[[as.character(b)]], k)
+  }), use.names = FALSE)
+}
+
+matched_null <- replicate(N_OVERLAP_PERMUTATIONS,
+  length(intersect(sample_matched(), icc_coherent_set)))
+
+matched_p <- (sum(matched_null >= observed_overlap) + 1) /
+             (N_OVERLAP_PERMUTATIONS + 1)
+
+cat(sprintf("Detection-matched null:  mean %.1f, %.2fx, perm p = %.4g\n",
+            mean(matched_null), observed_overlap / mean(matched_null), matched_p))
+
+p_overlap_null <- ggplot(data.frame(overlap = matched_null), aes(x = overlap)) +
+  geom_histogram(binwidth = 1, boundary = -0.5, fill = "gray60",
+                 alpha = 0.6) +
+  geom_vline(xintercept = observed_overlap, color = "hotpink",
+             linetype = "dashed", linewidth = 1) +
+  theme_classic() +
+  labs(x = "Heritable / ICC-coherent overlap", y = "Permutations",
+       title = "Heritable vs ICC-coherent genes, detection-matched null",
+       subtitle = sprintf("Observed = %d (pink dashed); %.2fx enrichment, permutation p = %.3g",
+                          observed_overlap,
+                          observed_overlap / mean(matched_null), matched_p))
+print(p_overlap_null)
+ggsave(p_overlap_null, file = paste0(output.dir, "PanelJ_overlap_null.pdf"),
+       device = "pdf", width = 7, height = 5)
+
+overlap_genes_icc <- coherence_df %>%
+  filter(gene %in% intersect(icc_coherent_set, heritable_tested)) %>%
+  arrange(desc(icc)) %>%
+  pull(gene)
+cat("Heritable & ICC-coherent genes:\n")
+print(overlap_genes_icc)
+```
+
+### Panel H supplement: cluster-matched null
+
+Prerequisites: `coherence_df` from the `### Panel H: ICC` chunk above. Genes are labelled
+by ICC rank, plus the same restriction- and host-factor panel used for Panel H.
+```{r}
+coherence_output.dir <- paste0(output.dir, "coherence_alternatives/")
+dir.create(coherence_output.dir, recursive = TRUE, showWarnings = FALSE)
+
+ICC_MIN <- 0.10   # must match the ICC extraction chunk
+
+coherence_plot_df <- coherence_df %>% filter(!is.na(icc))
+
+coherence_label_genes <- union(
+  coherence_plot_df %>% arrange(desc(icc)) %>% head(20) %>% pull(gene),
+  c("IL7R", "APOBEC3G", "APOBEC3H", "SAMHD1", "BST2", "SERINC5", "SERINC3",
+    "MX2", "CD4", "CCR5", "CCNT1", "NFKB1", "RELA", "PSIP1", "SP1", "CDK9")
+)
+coherence_label_df <- coherence_plot_df %>%
+  filter(gene %in% coherence_label_genes)
+
+# 1. What the cluster-matched null costs. Its mean ICC is the coherence a gene
+# gets for free from clonemates sharing a cluster; the distance above the
+# diagonal is what clone identity adds on top of cell state.
+p_icc_cluster_null <- ggplot(coherence_df,
+                             aes(x = icc_cluster_null_mean, y = icc)) +
+  geom_point(aes(color = icc_coherent_cluster), size = 0.5, alpha = 0.4) +
+  geom_abline(slope = 1, intercept = 0, linetype = "dashed", color = "gray40") +
+  geom_hline(yintercept = ICC_MIN, linetype = "dotted", color = "gray40") +
+  geom_text_repel(data = coherence_label_df, aes(label = gene),
+                  size = 2.5, max.overlaps = 20, segment.size = 0.3,
+                  min.segment.length = 0, box.padding = 0.3) +
+  scale_color_manual(values = c("TRUE" = "steelblue", "FALSE" = "gray70"),
+                     labels = c("TRUE" = "Coherent", "FALSE" = "Not called")) +
+  theme_classic() +
+  theme(aspect.ratio = 1) +
+  labs(x = "Mean ICC under the cluster-matched null",
+       y = "Observed ICC",
+       title = "Clone identity vs shared cell state",
+       subtitle = sprintf("Cluster-matched null median ICC = %.4f vs global null %.4f",
+                          median(coherence_df$icc_cluster_null_mean, na.rm = TRUE),
+                          median(coherence_df$icc_null_mean, na.rm = TRUE)),
+       color = "")
+print(p_icc_cluster_null)
+ggsave(p_icc_cluster_null,
+       file = paste0(coherence_output.dir, "PanelH_icc_cluster_null.pdf"),
+       device = "pdf", width = 6, height = 6)
+
+# 2. p-value resolution. The ICC permutation test cannot return a p-value below
+# 1 / N_ICC_PERMUTATIONS, so its significant genes pile up at a single value,
+# which is why Panel H plots the permutation z-score instead.
+pvalue_df <- bind_rows(
+  coherence_plot_df %>% transmute(pvalue = icc_perm_pvalue,
+                                  method = "ICC permutation (global null)"),
+  coherence_plot_df %>% transmute(pvalue = icc_cluster_pvalue,
+                                  method = "ICC permutation (cluster-matched)")
+)
+
+p_pvalue_resolution <- ggplot(pvalue_df, aes(x = pvalue)) +
+  geom_histogram(bins = 50, fill = "gray70") +
+  facet_wrap(~ method, scales = "free_y") +
+  theme_classic() +
+  labs(x = "p-value", y = "Genes",
+       title = "p-value resolution by method",
+       subtitle = "Permutation tests are floored at 1 / n_permutations")
+print(p_pvalue_resolution)
+ggsave(p_pvalue_resolution,
+       file = paste0(coherence_output.dir, "PanelH_pvalue_resolution.pdf"),
+       device = "pdf", width = 9, height = 4)
+
+cat("Method agreement:\n")
+print(table(`ICC global null` = coherence_plot_df$icc_coherent,
+            `ICC cluster-matched` = coherence_plot_df$icc_coherent_cluster))
+```
+
+
+# Host targets
+## Extraction
+
+### BRIE
+
+Prerequisite: run BRIE2 via `extractionScripts/submissionScripts/Figure4/brie2.sh`
+
+```{r}
+brie.dir <- paste0(data.root, "Figure4/singleCell/BRIE2/invitro/")
+
+brie <- read.csv(paste0(brie.dir, "brie2_per_cell.csv"))
+
+brie_wide <- brie %>%
+  pivot_wider(
+    id_cols     = cellID,
+    names_from  = event,
+    values_from = c(isoform1, isoform2, psi),
+    values_fill = list(isoform1 = 0, isoform2 = 0)
+  ) %>%
+  rename_with(~ sub("^isoform1_", "", .) %>% paste0("_in_BRIE"),  starts_with("isoform1_")) %>%
+  rename_with(~ sub("^isoform2_", "", .) %>% paste0("_out_BRIE"), starts_with("isoform2_")) %>%
+  rename_with(~ sub("^psi_",      "", .) %>% paste0("_psi_BRIE"), starts_with("psi_"))
+
+combined.dir  <- paste0(data.root, "Figure4/combined/")
+combined_data <- read.csv(paste0(combined.dir, "dataframes/GFP_invitro_all_gated.csv"))
+
+combined_with_brie <- left_join(combined_data, brie_wide, by = "cellID")
+cat("Cells in combined_data:", nrow(combined_data))
+```
+
+### Host CaRe
+
+Prerequisites: `extractionScripts/submissionScripts/Figure4/stepTwo_bamsort.sh` on host genes, and the BRIE chunk above for
+`combined_with_brie`.
+
+```{r}
+alignment.dir <- paste0(data.root, "Figure4/CaRe/stepTwo/alignment/")
+processed.dir <- paste0(data.root, "Figure4/CaRe/stepTwo/processed/")
+
+samples <- c("PTPRC", "BCL2L1", "IL7R")
+
+cat_map <- list(
+  PTPRC  = c("PTPRC_exon4", "PTPRC_exon4_exclusion"),
+  IL7R   = c("IL7R_exon6_TM", "IL7R_exon6_TM_exclusion"),
+  BCL2L1 = c("BCL2L1")
+)
+
+# Loading raw alignment rows for QC
+care_data <- bind_rows(lapply(samples, function(s) {
+  files <- list.files(alignment.dir,
+                      pattern = paste0("^", s, "_bamsort_alignment_.*\\.csv$"),
+                      full.names = TRUE)
+  bind_rows(lapply(files, function(f) {
+    df <- read.csv(f)
+    if (nrow(df) == 0) return(NULL)
+    df$sample <- s
+    df$target <- sub("^.*_bamsort_alignment_(.*)\\.csv$", "\\1", basename(f))
+    df
+  }))
+}))
+
+bamsort_stats <- bind_rows(lapply(samples, function(s) {
+  f <- paste0(alignment.dir, s, "_alignment_summary.txt")
+  if (file.exists(f)) read.csv(f) else NULL
+}))
+cat("Loaded ", nrow(bamsort_stats), " summary rows\n",
+    nrow(care_data), " UMI x cellID x target rows across ",
+    length(unique(care_data$sample)), " samples\n", sep = "")
+
+# minimums
+minimum.dir <- paste0(processed.dir, "minimum/")
+process_all_set_minimums(
+  mode        = "host",
+  sample_list = samples,
+  input_dir   = processed.dir,
+  save_output = TRUE,
+  output_dir  = minimum.dir,
+  min_reads   = 2,   # >= 2 reads/UMI; drops single-read UMIs
+  min_umi     = 1
+)
+
+
+# joining: pull all needed category columns per gene from host_filtered.csv
+care_per_target <- lapply(samples, function(s) {
+  f <- paste0(minimum.dir, s, "_host_filtered.csv")
+  if (!file.exists(f)) return(NULL)
+  df <- read.csv(f)
+  if (nrow(df) == 0) return(NULL)
+  cats <- cat_map[[s]]
+  missing <- setdiff(cats, colnames(df))
+  if (length(missing) > 0) {
+    warning(sprintf("Sample %s: missing categories %s -- filling with 0",
+                    s, paste(missing, collapse = ", ")))
+    df[missing] <- 0
+  }
+  df[, c("cellID", cats), drop = FALSE]
+})
+care_per_target <- Filter(Negate(is.null), care_per_target)
+
+care_wide <- Reduce(function(x, y) merge(x, y, by = "cellID", all = TRUE),
+                     care_per_target)
+care_wide[is.na(care_wide)] <- 0
+
+# Per-cell binary splice calls: exon included (inclusion UMIs) vs exon
+# excluded (UMIs with N-gap spanning the cassette). For PTPRC, A_out
+# aggregates every skip-A splice path -- RB, RC, RBC, RO -- aka "RA-negative"
+care_wide <- care_wide %>%
+  mutate(
+    PTPRC_A_in_CaRe  = PTPRC_exon4,
+    PTPRC_A_out_CaRe = PTPRC_exon4_exclusion,
+    IL7R_TM_in_CaRe  = IL7R_exon6_TM,
+    IL7R_TM_out_CaRe = IL7R_exon6_TM_exclusion,
+    BCL2L1_CaRe      = BCL2L1
+  ) %>%
+  select(cellID, ends_with("_CaRe"))
+
+integrated <- combined_with_brie %>%
+  left_join(care_wide, by = "cellID") %>%
+  mutate(across(ends_with("_CaRe"), ~ ifelse(is.na(.x), 0, .x)))
+
+save_dir <- paste0(data.root, "Figure4/joint/integrated/")
+dir.create(save_dir, recursive = TRUE, showWarnings = FALSE)
+write.csv(integrated,
+          paste0(save_dir, "GFP_invitro_integrated_host_CaRe.csv"),
+          row.names = FALSE)
+
+care_cols <- grep("_CaRe$", colnames(integrated), value = TRUE)
+cat("Integrated table:", nrow(integrated), "cells x ", ncol(integrated), "columns\n")
+cat("Cells CaRe+ for any isoform column:",
+    sum(rowSums(integrated[, care_cols, drop = FALSE] > 0) > 0), "\n")
+for (col in care_cols) {
+  cat(sprintf("  %s+ cells: %d\n", col, sum(integrated[[col]] > 0)))
+}
+```
+
+
+### Host gene expression per cell
+
+Prerequisite: the Seurat object. Writes per-cell IL7R gene counts, the
+denominator and x-axis for the Panel K sensitivity curve. The RDS is ~1.2 GB, so
+this chunk is run on a compute node (srun, genomics partition) rather than the
+login node.
+
+```{r}
+rds.dir        <- paste0(data.root, "Figure4/singleCell/Seurat/RDS/")
+integrated.dir <- paste0(data.root, "Figure4/joint/integrated/")
+
+seurat_obj <- readRDS(paste0(rds.dir, "GFP_invitro.rds"))
+seurat_obj[["RNA"]] <- JoinLayers(seurat_obj[["RNA"]])
+il7r_counts <- GetAssayData(seurat_obj, assay = "RNA", layer = "counts")["IL7R", ]
+rm(seurat_obj); invisible(gc())
+
+write.csv(data.frame(cellID = names(il7r_counts),
+                     IL7R_GEX = as.numeric(il7r_counts)),
+          paste0(integrated.dir, "il7r_GEX_percell.csv"), row.names = FALSE)
+cat(sprintf("IL7R gene counts written for %d cells | IL7R+ %d\n",
+            length(il7r_counts), sum(il7r_counts > 0)))
+```
+
+
+## Plotting
+
+Prerequisites: the `## Extraction` chunks above, which write the integrated
+host Ca*Re table and `il7r_GEX_percell.csv`.
+
+Data loading.
+
+```{r}
+joint.dir    <- paste0(data.root, "Figure4/joint/integrated/")
+combined.dir <- paste0(data.root, "Figure4/combined/")
+
+integrated    <- read.csv(paste0(joint.dir, "GFP_invitro_integrated_host_CaRe.csv"))
+combined_data <- read.csv(paste0(combined.dir, "dataframes/GFP_invitro_all_gated.csv"))
+
+care_cols <- c("PTPRC_A_in_CaRe", "PTPRC_A_out_CaRe",
+                "IL7R_TM_in_CaRe", "IL7R_TM_out_CaRe",
+                "BCL2L1_CaRe")
+
+output.dir <- paste0(plot.root, "Figure4/")
+dir.create(output.dir, recursive = TRUE, showWarnings = FALSE)
+```
+
+### Panel F: PTPRC isoform recovery — TenX vs Ca*Re
+
+Prerequisite: the host-target extraction in Figure4
+(`process_all_set_minimums`, mode "host", `min_reads = 2`) regenerated
+`PTPRC_host_filtered.csv`; BRIE2 run on the TenX library (`extractionScripts/submissionScripts/Figure4/brie2.sh`).
+
+```{r}
+integrated.dir <- paste0(data.root, "Figure4/joint/integrated/")
+care.dir      <- paste0(data.root, "Figure4/CaRe/stepTwo/processed/minimum/")
+combined.dir   <- paste0(data.root, "Figure4/combined/")
+umi.file       <- paste0(data.root, "Figure4/",
+                         "CaRe/stepTwo/processed/PTPRC_UMI_read_counts_full.csv")
+
+isoform_levels    <- c("RA", "RB", "RC", "RO")
+MIN_READS_PER_UMI <- 2
+
+ptprc_tenx <- read.csv(paste0(integrated.dir, "ptprc_GEX_percell.csv"))
+
+# RO molecules exclude all three cassettes A, B, and C
+ptprc_ro <- read.csv(umi.file) %>%
+  filter(read_count >= MIN_READS_PER_UMI) %>%
+  group_by(cellID, UMI) %>%
+  summarise(is_RO = any(category == "PTPRC_exon4_exclusion") &
+                    any(category == "PTPRC_exon5_exclusion") &
+                    any(category == "PTPRC_exon6_exclusion"),
+            .groups = "drop") %>%
+  filter(is_RO) %>%
+  count(cellID, name = "RO")
+
+ptprc_care <- read.csv(paste0(care.dir, "PTPRC_host_filtered.csv")) %>%
+  mutate(RA = PTPRC_exon4, RB = PTPRC_exon5, RC = PTPRC_exon6) %>%
+  left_join(ptprc_ro, by = "cellID") %>%
+  mutate(RO = ifelse(is.na(RO), 0, RO))
+
+analysis_cells <- read.csv(paste0(combined.dir, "dataframes/GFP_invitro_all_gated.csv"))$cellID
+ptprc_tenx   <- ptprc_tenx   %>% filter(cellID %in% analysis_cells)
+ptprc_care <- ptprc_care %>% filter(cellID %in% analysis_cells)
+cat(sprintf("Analysis cells %d | TenX table %d | Ca*Re %d\n",
+            length(analysis_cells), nrow(ptprc_tenx), nrow(ptprc_care)))
+
+brie.dir <- paste0(data.root, "Figure4/singleCell/BRIE2/invitro/")
+brie_events <- read.csv(paste0(brie.dir, "brie2_per_cell.csv")) %>%
+  filter(grepl("^PTPRC_", event))
+
+ptprc_brie <- brie_events %>%
+  group_by(cellID) %>%
+  summarise(brie_umis = sum(isoform1 + isoform2, na.rm = TRUE), .groups = "drop") %>%
+  filter(cellID %in% analysis_cells)
+
+# RO is cell-level for BRIE2
+ptprc_brie_iso <- brie_events %>%
+  select(cellID, event, isoform1, isoform2) %>%
+  pivot_wider(names_from = event, values_from = c(isoform1, isoform2),
+              values_fill = 0) %>%
+  transmute(cellID,
+            RA = isoform1_PTPRC_exon4,
+            RB = isoform1_PTPRC_exon5,
+            RC = isoform1_PTPRC_exon6,
+            RO = as.integer(isoform2_PTPRC_exon4 > 0 &
+                            isoform2_PTPRC_exon5 > 0 &
+                            isoform2_PTPRC_exon6 > 0)) %>%
+  filter(cellID %in% analysis_cells)
+
+resolved <- list(
+  "TenX" = ptprc_brie$cellID[ptprc_brie$brie_umis > 0],
+  "Ca*Re"       = ptprc_care$cellID[rowSums(ptprc_care[, isoform_levels]) > 0])
+
+ptprc_pos_ids <- ptprc_tenx$cellID[ptprc_tenx$PTPRC_GEX > 0]
+n_ptprc_pos   <- length(ptprc_pos_ids)
+
+bar_df <- bind_rows(lapply(names(resolved), function(m) {
+  n <- sum(ptprc_pos_ids %in% resolved[[m]])
+  ci <- binom.test(n, n_ptprc_pos)$conf.int
+  data.frame(category = m, n_cells = n, frac = n / n_ptprc_pos,
+             ci_lower = ci[1], ci_upper = ci[2])
+})) %>%
+  mutate(category = factor(category, levels = names(resolved)))
+cat(sprintf("PTPRC+ cells (denominator): %d\n", n_ptprc_pos))
+print(bar_df)
+
+# McNemar on paired per-cell membership
+mcnemar_pair <- function(a, b) {
+  tbl <- table(factor(ptprc_pos_ids %in% resolved[[a]], c(FALSE, TRUE)),
+               factor(ptprc_pos_ids %in% resolved[[b]], c(FALSE, TRUE)))
+  mcnemar.test(tbl)$p.value
+}
+pairs_df <- as.data.frame(t(combn(names(resolved), 2)),
+                          stringsAsFactors = FALSE) %>%
+  rename(method_a = V1, method_b = V2) %>%
+  rowwise() %>%
+  mutate(p_value = mcnemar_pair(method_a, method_b)) %>%
+  ungroup()
+print(pairs_df)
+
+sig_stars <- function(p) ifelse(p < 1e-4, "****", ifelse(p < 1e-3, "***",
+                         ifelse(p < 1e-2, "**", ifelse(p < 0.05, "*", "ns"))))
+
+bracket_base <- max(bar_df$ci_upper) + 0.05
+pairs_df <- pairs_df %>%
+  mutate(xmin = match(method_a, levels(bar_df$category)),
+         xmax = match(method_b, levels(bar_df$category)),
+         y_position = bracket_base + 0.07 * (row_number() - 1))
+
+p_bar <- ggplot(bar_df, aes(x = category, y = frac, fill = category)) +
+  geom_col(width = 0.7, color = "black", linewidth = 0.3) +
+  geom_errorbar(aes(ymin = ci_lower, ymax = ci_upper),
+                width = 0.25, linewidth = 0.4) +
+  geom_signif(annotations = sig_stars(pairs_df$p_value),
+              xmin = pairs_df$xmin, xmax = pairs_df$xmax,
+              y_position = pairs_df$y_position, tip_length = 0.01,
+              textsize = 4) +
+  scale_fill_manual(values = c("TenX" = "#2B3990",
+                               "Ca*Re"       = "#00AEEF"), guide = "none") +
+  scale_y_continuous(limits = c(0, 1.0), expand = expansion(mult = c(0, 0.02))) +
+  theme_classic() +
+  labs(x = "PTPRC\nisoform resolved", y = "Fraction of PTPRC+ cells")
+print(p_bar)
+ggsave(paste0(output.dir, "PanelF_PTPRC_barplot.pdf"),
+       p_bar, width = 3, height = 5)
+```
+
+### Panel G: clonal heritability of PTPRC isoform
+
+Prerequisite: the Barcode > Plotting data-loading chunk (`combined_data`) and
+the Host targets > Plotting data-loading chunk (`output.dir`).
+
+```{r}
+set.seed(42)
+dir.create(output.dir, recursive = TRUE, showWarnings = FALSE)
+
+umi.file          <- paste0(data.root, "Figure4/",
+                            "CaRe/stepTwo/processed/PTPRC_UMI_read_counts_full.csv")
+MIN_READS_PER_UMI   <- 2
+MIN_CLONE_CELLS     <- 2
+N_HERITABILITY_PERM <- 2000
+
+CASSETTES <- c(A = "PTPRC_exon4", C = "PTPRC_exon6")
+
+icc_one_way <- function(values, groups) {
+  groups      <- droplevels(factor(groups))
+  group_n     <- as.numeric(table(groups))
+  n_total     <- length(values)
+  n_groups    <- nlevels(groups)
+  group_means <- as.numeric(tapply(values, groups, mean))
+  grand_mean  <- mean(values)
+  ss_between  <- sum(group_n * (group_means - grand_mean)^2)
+  ss_within   <- sum((values - grand_mean)^2) - ss_between
+  ms_between  <- ss_between / (n_groups - 1)
+  ms_within   <- ss_within  / (n_total - n_groups)
+  n0 <- (n_total - sum(group_n^2) / n_total) / (n_groups - 1)
+  (ms_between - ms_within) / (ms_between + (n0 - 1) * ms_within)
+}
+
+permute_within_strata <- function(labels, strata) {
+  shuffled <- labels
+  for (level in unique(strata)) {
+    idx <- which(strata == level)
+    if (length(idx) > 1) shuffled[idx] <- sample(labels[idx])
+  }
+  shuffled
+}
+
+ptprc_umi <- read.csv(umi.file) %>% filter(read_count >= MIN_READS_PER_UMI)
+
+# Per-cell splicing state for one cassette, restricted to barcoded cells sitting
+# in a clone of at least MIN_CLONE_CELLS informative cells.
+cassette_cells <- function(exon) {
+  ptprc_umi %>%
+    group_by(cellID, UMI) %>%
+    summarise(inc = any(category == exon),
+              exc = any(category == paste0(exon, "_exclusion")), .groups = "drop") %>%
+    filter(inc | exc) %>%
+    group_by(cellID) %>%
+    summarise(n_umi = n(), psi = sum(inc) / n(), .groups = "drop") %>%
+    inner_join(combined_data %>% select(cellID, barcode, cluster), by = "cellID") %>%
+    filter(barcode != "none") %>%
+    group_by(barcode) %>% filter(n() >= MIN_CLONE_CELLS) %>% ungroup()
+}
+
+cassette_heritability <- function(cassette, exon) {
+  d <- cassette_cells(exon)
+  state_r2 <- summary(lm(psi ~ factor(cluster), data = d))$r.squared
+  cat(sprintf("\ncassette %s (%s): %d cells | %d clones | mean psi %.3f | skip+ %.1f%% | psi ~ cluster R2 %.3f\n",
+              cassette, exon, nrow(d), n_distinct(d$barcode), mean(d$psi),
+              100 * mean(d$psi < 1), state_r2))
+
+  statistics <- list("psi ICC" = function(g) icc_one_way(d$psi, g))
+  nulls <- list("Clone-label shuffle"           = function() sample(d$barcode),
+                "Shuffle within Leiden cluster" = function()
+                  permute_within_strata(d$barcode, d$cluster))
+
+  out <- lapply(names(statistics), function(stat) {
+    f   <- statistics[[stat]]
+    obs <- f(d$barcode)
+    draws <- lapply(nulls, function(permute)
+      replicate(N_HERITABILITY_PERM, f(permute())))
+    p <- vapply(draws, function(x) (sum(x >= obs) + 1) / (N_HERITABILITY_PERM + 1),
+                numeric(1))
+    cat(sprintf("  %-17s observed %9.3f | %s\n", stat, obs,
+                paste(sprintf("%s p = %.4g", c("global", "cluster-matched"), p),
+                      collapse = " | ")))
+    list(observed = data.frame(cassette = cassette, statistic = stat, value = obs,
+                               p_global = p[[1]], p_cluster = p[[2]]),
+         nulls = bind_rows(lapply(names(draws), function(n)
+           data.frame(cassette = cassette, statistic = stat,
+                      value = draws[[n]], null = n))))
+  })
+
+  # Single-UMI cells have psi pinned to 0 or 1, which adds within-clone sampling
+  # noise; repeating on >= 2 UMI cells checks psi is not driven by it.
+  deep <- d %>% filter(n_umi >= 2) %>%
+    group_by(barcode) %>% filter(n() >= MIN_CLONE_CELLS) %>% ungroup()
+  if (n_distinct(deep$barcode) >= 5) {
+    icc_deep  <- icc_one_way(deep$psi, deep$barcode)
+    null_deep <- replicate(N_HERITABILITY_PERM, icc_one_way(deep$psi, sample(deep$barcode)))
+    cat(sprintf("  sensitivity, psi on >= 2 UMI cells (%d cells, %d clones): ICC %.3f, p = %.4g\n",
+                nrow(deep), n_distinct(deep$barcode), icc_deep,
+                (sum(null_deep >= icc_deep) + 1) / (N_HERITABILITY_PERM + 1)))
+  }
+
+  # Clones sit largely inside one cluster, so the cluster-matched null removes
+  # much of the clone structure along with cell state and is conservative.
+  purity <- d %>% group_by(barcode) %>%
+    summarise(top = max(table(cluster)) / n(), .groups = "drop")
+  cat(sprintf("  clone cluster purity: median %.2f | confined to one cluster %d/%d\n",
+              median(purity$top), sum(purity$top == 1), nrow(purity)))
+
+  list(observed = bind_rows(lapply(out, `[[`, "observed")),
+       nulls    = bind_rows(lapply(out, `[[`, "nulls")))
+}
+
+heritability   <- lapply(names(CASSETTES),
+                         function(x) cassette_heritability(x, CASSETTES[[x]]))
+stat_observed  <- bind_rows(lapply(heritability, `[[`, "observed"))
+stat_nulls     <- bind_rows(lapply(heritability, `[[`, "nulls"))
+
+panel_label <- function(cassette, statistic, p_global, p_cluster)
+  sprintf("cassette %s -- %s\nglobal p = %.3f, cluster-matched p = %.3f",
+          cassette, statistic, p_global, p_cluster)
+label_levels <- with(stat_observed, panel_label(cassette, statistic, p_global, p_cluster))
+stat_observed <- stat_observed %>%
+  mutate(panel = factor(panel_label(cassette, statistic, p_global, p_cluster),
+                        levels = label_levels))
+stat_nulls <- stat_nulls %>%
+  left_join(stat_observed %>% select(cassette, statistic, panel),
+            by = c("cassette", "statistic"))
+
+p_heritability <- ggplot(stat_nulls, aes(x = value, fill = null)) +
+  geom_histogram(position = "identity", bins = 45, alpha = 0.6, color = NA) +
+  geom_vline(data = stat_observed, aes(xintercept = value),
+             color = "#D55E00", linetype = "dashed", linewidth = 1) +
+  facet_wrap(~ panel, ncol = 1, scales = "free") +
+  scale_fill_manual(values = c("Clone-label shuffle" = "gray70",
+                               "Shuffle within Leiden cluster" = "steelblue")) +
+  theme_classic() +
+  theme(legend.position = "bottom", legend.direction = "vertical",
+        strip.text = element_text(size = 8)) +
+  labs(x = "Clone ICC (psi)", y = "Permutations", fill = NULL,
+       title = "Clonal heritability of PTPRC cassette splicing",
+       subtitle = "Orange dashed = observed")
+print(p_heritability)
+ggsave(p_heritability, file = paste0(output.dir, "PanelG_PTPRC_heritability.pdf"),
+       device = "pdf", width = 5, height = 7)
+```
+
+### Panel K: IL7R isoform detection sensitivity — Ca*Re vs 10X
+
+Prerequisite: run the plotting data-loading chunk (`integrated`, `output.dir`)
+and the host gene expression extraction chunk (`il7r_GEX_percell.csv`).
+
+Detection rate against IL7R gene expression, per method. The gain in isoform
+recovery is a per-transcript sensitivity gain rather than deeper sampling of
+cells 10X already resolves, so the panel plots how much IL7R a cell must express
+before each method resolves its isoform. Note the x-axis comes from the same 10X
+library BRIE2 calls isoforms from, so a cell with IL7R counts is guaranteed 10X
+reads at the locus; that asymmetry favours 10X and makes the gap conservative.
+
+```{r}
+integrated.dir <- paste0(data.root, "Figure4/joint/integrated/")
+MIN_CELLS_PER_POINT <- 20   # below this an observed detection rate is too noisy to plot
+
+il7r <- integrated %>%
+  mutate(care = IL7R_TM_in_CaRe      + IL7R_TM_out_CaRe,
+         tenx  = IL7R_exon6_TM_in_BRIE + IL7R_exon6_TM_out_BRIE) %>%
+  inner_join(read.csv(paste0(integrated.dir, "il7r_GEX_percell.csv")), by = "cellID")
+
+# --- Isoform recovery, the headline comparison --------------------------------
+cat("=== IL7R isoform recovery ===\n")
+cat(sprintf("Isoform molecules: Ca*Re %d | 10X (BRIE2) %d | %.1fx\n",
+            sum(il7r$care), sum(il7r$tenx), sum(il7r$care) / sum(il7r$tenx)))
+cat(sprintf("Cells with isoform resolution: Ca*Re %d | 10X %d | %.1fx (of %d cells)\n",
+            sum(il7r$care > 0), sum(il7r$tenx > 0),
+            sum(il7r$care > 0) / sum(il7r$tenx > 0), nrow(il7r)))
+cat(sprintf("Detection overlap: both %d | Ca*Re-only %d | 10X-only %d\n",
+            sum(il7r$care > 0 & il7r$tenx > 0), sum(il7r$care > 0 & il7r$tenx == 0),
+            sum(il7r$tenx > 0 & il7r$care == 0)))
+
+# --- Soluble (exon 6 skipped) share of isoforms -------------------------------
+cat("\n=== Soluble (TM-out) share of IL7R isoforms ===\n")
+for (method in c("Ca*Re", "10X")) {
+  out   <- if (method == "Ca*Re") il7r$IL7R_TM_out_CaRe else il7r$IL7R_exon6_TM_out_BRIE
+  total <- if (method == "Ca*Re") il7r$care              else il7r$tenx
+  cat(sprintf("%-6s soluble %d / %d molecules (%.1f%%) | soluble+ cells %d / %d resolved\n",
+              method, sum(out), sum(total), 100 * sum(out) / sum(total),
+              sum(out > 0), sum(total > 0)))
+}
+
+# --- Molecules per resolved cell: is the gain depth or breadth? ---------------
+# If Ca*Re only sampled the same cells more deeply, its resolved cells would
+# carry more molecules each. They do not, so the gain is in which cells are
+# resolved at all.
+care_depth <- il7r$care[il7r$care > 0]
+tenx_depth  <- il7r$tenx[il7r$tenx  > 0]
+cat("\n=== Isoform molecules per resolved cell ===\n")
+cat(sprintf("Ca*Re mean %.2f (median %d) | 10X mean %.2f (median %d) | Wilcoxon p = %.2f, KS p = %.2f\n",
+            mean(care_depth), median(care_depth), mean(tenx_depth), median(tenx_depth),
+            suppressWarnings(wilcox.test(care_depth, tenx_depth))$p.value,
+            suppressWarnings(ks.test(care_depth, tenx_depth))$p.value))
+
+# --- Detection vs IL7R expression ---------------------------------------------
+# Restricted to IL7R+ cells: among IL7R-zero cells the few Ca*Re calls are
+# single-molecule and flat across clusters, i.e. an ambient signature.
+expressing <- il7r %>% filter(IL7R_GEX > 0)
+
+# Half-detection point: transcripts at which a method resolves half of cells.
+half_detection <- function(resolved, counts) {
+  fit <- glm(resolved ~ log2_counts, family = binomial,
+             data = data.frame(resolved = resolved, log2_counts = log2(counts)))
+  2 ^ (-coef(fit)[[1]] / coef(fit)[[2]])
+}
+half_care <- half_detection(expressing$care > 0, expressing$IL7R_GEX)
+half_tenx  <- half_detection(expressing$tenx  > 0, expressing$IL7R_GEX)
+cat(sprintf("\n=== Detection vs IL7R expression (%d IL7R+ cells) ===\n", nrow(expressing)))
+cat(sprintf("Half-detection point: Ca*Re %.1f transcripts | 10X %.1f transcripts | %.1fx lower\n",
+            half_care, half_tenx, half_tenx / half_care))
+
+observed <- expressing %>%
+  group_by(IL7R_GEX) %>%
+  summarise(n_cells = n(), `Ca*Re` = mean(care > 0), `10X` = mean(tenx > 0),
+            .groups = "drop") %>%
+  filter(n_cells >= MIN_CELLS_PER_POINT) %>%
+  pivot_longer(c(`Ca*Re`, `10X`), names_to = "method", values_to = "rate")
+cat("\nObserved detection rate by IL7R transcript count:\n")
+print(as.data.frame(observed %>%
+  pivot_wider(names_from = method, values_from = rate) %>%
+  mutate(across(c(`Ca*Re`, `10X`), ~ round(.x, 3)))))
+
+# Logistic fits drawn over the plotted range, one per method.
+fit_curve <- function(resolved, label) {
+  fit  <- glm(resolved ~ log2_counts, family = binomial,
+              data = data.frame(resolved = resolved,
+                                log2_counts = log2(expressing$IL7R_GEX)))
+  grid <- seq(1, max(observed$IL7R_GEX), length.out = 200)
+  data.frame(IL7R_GEX = grid, method = label,
+             rate = predict(fit, data.frame(log2_counts = log2(grid)),
+                            type = "response"))
+}
+curves <- bind_rows(fit_curve(expressing$care > 0, "Ca*Re"),
+                    fit_curve(expressing$tenx  > 0, "10X"))
+
+method_colors <- c("Ca*Re" = "#00AEEF", "10X" = "#2B3990")
+half_df <- data.frame(method = c("Ca*Re", "10X"), x = c(half_care, half_tenx))
+
+p_sensitivity <- ggplot(observed, aes(x = IL7R_GEX, y = rate, color = method)) +
+  geom_hline(yintercept = 0.5, linetype = "dotted", color = "gray60",
+             linewidth = 0.4) +
+  geom_segment(data = half_df, inherit.aes = FALSE,
+               aes(x = x, xend = x, y = 0, yend = 0.5, color = method),
+               linetype = "dashed", linewidth = 0.5) +
+  geom_line(data = curves, linewidth = 0.8) +
+  geom_point(aes(size = n_cells)) +
+  scale_color_manual(values = method_colors, name = NULL) +
+  scale_size_area(max_size = 5, name = "Cells") +
+  scale_x_continuous(breaks = scales::pretty_breaks()) +
+  scale_y_continuous(labels = scales::percent, limits = c(0, 1)) +
+  theme_classic() +
+  theme(aspect.ratio = 1) +
+  labs(x = "IL7R transcripts per cell (10X)",
+       y = "Cells with IL7R isoform resolution",
+       title = "IL7R isoform detection sensitivity",
+       subtitle = sprintf("Half-detection: Ca*Re %.1f vs 10X %.1f transcripts",
+                          half_care, half_tenx))
+print(p_sensitivity)
+ggsave(p_sensitivity, file = paste0(output.dir, "PanelK_IL7R_detection_sensitivity.pdf"),
+       device = "pdf", width = 5.5, height = 4.5)
+```
+
+## In text numbers
+
+Prerequisites: `GFP_invitro_all_gated.csv` and
+`GFP_invitro_integrated_host_CaRe.csv` on disk.
+
+```{r}
+## Data loading
+joint.dir    <- paste0(data.root, "Figure4/joint/integrated/")
+combined.dir <- paste0(data.root, "Figure4/combined/")
+
+# The host-target artifact, for the isoform read-outs.
+integrated <- read.csv(paste0(joint.dir, "GFP_invitro_integrated_host_CaRe.csv"))
+# The SIV extraction's own table, for the viral read-outs and the CD4 T call.
+# Taking them from here rather than from `integrated` keeps this chunk current
+# with the SIV extraction without the host join having to be rebuilt first.
+combined_gated <- read.csv(paste0(combined.dir, "dataframes/GFP_invitro_all_gated.csv"))
+
+care_cols <- c("PTPRC_A_in_CaRe", "PTPRC_A_out_CaRe",
+                "IL7R_TM_in_CaRe", "IL7R_TM_out_CaRe",
+                "BCL2L1_CaRe")
+
+output.dir <- paste0(plot.root, "Figure4/")
+dir.create(output.dir, recursive = TRUE, showWarnings = FALSE)
+
+## Print statements
+il7r_tab <- integrated %>%
+  mutate(across(c(IL7R_exon6_TM_in_BRIE, IL7R_exon6_TM_out_BRIE),
+                ~ ifelse(is.na(.x), 0, .x)))
+
+care_in_total     <- sum(il7r_tab$IL7R_TM_in_CaRe)
+care_out_total    <- sum(il7r_tab$IL7R_TM_out_CaRe)
+care_umis         <- care_in_total + care_out_total
+care_resolved     <- (il7r_tab$IL7R_TM_in_CaRe + il7r_tab$IL7R_TM_out_CaRe) > 0
+care_cells        <- sum(care_resolved)
+care_soluble_frac <- care_out_total / care_umis
+
+brie_in_total     <- sum(il7r_tab$IL7R_exon6_TM_in_BRIE)
+brie_out_total    <- sum(il7r_tab$IL7R_exon6_TM_out_BRIE)
+brie_umis         <- brie_in_total + brie_out_total
+brie_resolved     <- (il7r_tab$IL7R_exon6_TM_in_BRIE + il7r_tab$IL7R_exon6_TM_out_BRIE) > 0
+brie_cells        <- sum(brie_resolved)
+brie_soluble_frac <- brie_out_total / brie_umis
+
+# --- SIV+ cells---
+cd4t_cells <- combined_gated %>%
+  filter(cd4t %in% TRUE) %>%
+  mutate(siv_pos     = total > 0,
+         barcode_pos = barcode != "none")
+
+cat("=== SIV+ cells ===\n")
+cat(sprintf("CD4 T gate: %d / %d cells (%d excluded by a lineage marker)\n",
+            nrow(cd4t_cells), nrow(combined_gated),
+            sum(combined_gated$excluded %in% TRUE)))
+cat(sprintf("SIV+ (Ca*Re total > 0): %d / %d CD4 T cells (%.1f%%)\n",
+            sum(cd4t_cells$siv_pos), nrow(cd4t_cells), 100 * mean(cd4t_cells$siv_pos)))
+cat(sprintf("Barcode+ overall: %d (%.1f%%)\n",
+            sum(cd4t_cells$barcode_pos), 100 * mean(cd4t_cells$barcode_pos)))
+# The two conditional directions of one 2x2 table, each with its own counts.
+cat(sprintf("SIV+ rate:     barcode+ %.2f%% (%d/%d) vs barcode- %.2f%% (%d/%d)\n",
+            100 * mean(cd4t_cells$siv_pos[cd4t_cells$barcode_pos]),
+            sum(cd4t_cells$siv_pos & cd4t_cells$barcode_pos),
+            sum(cd4t_cells$barcode_pos),
+            100 * mean(cd4t_cells$siv_pos[!cd4t_cells$barcode_pos]),
+            sum(cd4t_cells$siv_pos & !cd4t_cells$barcode_pos),
+            sum(!cd4t_cells$barcode_pos)))
+cat(sprintf("Barcode+ rate: SIV+ %.1f%% (%d/%d) vs SIV- %.1f%% (%d/%d)\n",
+            100 * mean(cd4t_cells$barcode_pos[cd4t_cells$siv_pos]),
+            sum(cd4t_cells$barcode_pos & cd4t_cells$siv_pos),
+            sum(cd4t_cells$siv_pos),
+            100 * mean(cd4t_cells$barcode_pos[!cd4t_cells$siv_pos]),
+            sum(cd4t_cells$barcode_pos & !cd4t_cells$siv_pos),
+            sum(!cd4t_cells$siv_pos)))
+
+# --- IL7R---
+cat("\n=== IL7R isoform resolution (Ca*Re at min_reads >= 2) ===\n")
+cat(sprintf("Catch*ReSeq: %d isoform UMIs in %d / %d cells (%.1f%%) | soluble = %.1f%% of isoforms (%d UMIs)\n",
+            care_umis, care_cells, nrow(il7r_tab), 100 * care_cells / nrow(il7r_tab),
+            100 * care_soluble_frac, care_out_total))
+cat(sprintf("TenX (BRIE2): %d isoform UMIs in %d / %d cells (%.1f%%) | soluble = %.1f%% of isoforms (%d UMIs)\n",
+            brie_umis, brie_cells, nrow(il7r_tab), 100 * brie_cells / nrow(il7r_tab),
+            100 * brie_soluble_frac, brie_out_total))
+# The Ca*Re arm is the min_reads >= 2 / min_umi >= 1 host_filtered table that
+# process_all_set_minimums writes in the integration chunk. The TenX arm comes
+# from BRIE2 and has no such threshold.
+cat(sprintf("Recovery gain Catch*ReSeq / TenX: %.1fx isoform UMIs (%d vs %d), %.1fx cells (%d vs %d)\n",
+            care_umis / brie_umis, care_umis, brie_umis,
+            care_cells / brie_cells, care_cells, brie_cells))
+cat(sprintf("Cells resolved by both: %d | Catch*ReSeq only: %d | GEX only: %d (McNemar p = %.3g)\n",
+            sum(care_resolved & brie_resolved), sum(care_resolved & !brie_resolved),
+            sum(brie_resolved & !care_resolved),
+            mcnemar.test(table(care_resolved, brie_resolved))$p.value))
+
+soluble_test <- prop.test(c(care_out_total, brie_out_total), c(care_umis, brie_umis))
+cat(sprintf("Soluble fraction Catch*ReSeq %.1f%% vs TenX %.1f%%: prop test p = %.3g\n",
+            100 * care_soluble_frac, 100 * brie_soluble_frac, soluble_test$p.value))
+
+# --- Soluble+ co-expression of the membrane isoform ---
+# "Well dispersed" means soluble molecules sit in cells that also carry the
+# membrane form, rather than in a dedicated soluble-only subpopulation.
+care_soluble_pos  <- il7r_tab$IL7R_TM_out_CaRe > 0
+care_membrane_pos <- il7r_tab$IL7R_TM_in_CaRe  > 0
+cat("\n=== Soluble+ cells also expressing membrane isoform ===\n")
+cat(sprintf("Catch*ReSeq: %d / %d soluble+ cells also membrane+ (%.0f%%)\n",
+            sum(care_soluble_pos & care_membrane_pos), sum(care_soluble_pos),
+            100 * sum(care_soluble_pos & care_membrane_pos) / sum(care_soluble_pos)))
+
+comb_soluble_pos  <- care_soluble_pos  | (il7r_tab$IL7R_exon6_TM_out_BRIE > 0)
+comb_membrane_pos <- care_membrane_pos | (il7r_tab$IL7R_exon6_TM_in_BRIE  > 0)
+cat(sprintf("Catch*ReSeq | TenX: %d / %d soluble+ cells also membrane+ (%.0f%%)\n",
+            sum(comb_soluble_pos & comb_membrane_pos), sum(comb_soluble_pos),
+            100 * sum(comb_soluble_pos & comb_membrane_pos) / sum(comb_soluble_pos)))
+
+# Supp Fig 4E gates on pooled depth, where a co-expression call is not forced by
+# a one-UMI cell, so report the same gate the panel uses.
+depth_cut <- 3
+il7r_depth <- il7r_tab %>%
+  mutate(count_in  = IL7R_TM_in_CaRe  + IL7R_exon6_TM_in_BRIE,
+         count_out = IL7R_TM_out_CaRe + IL7R_exon6_TM_out_BRIE,
+         count_total = count_in + count_out) %>%
+  filter(count_total >= depth_cut)
+cat(sprintf("Pooled, depth >= %d (Supp Fig 4E gate): %d / %d soluble+ cells also membrane+ (%.0f%%) of %d cells\n",
+            depth_cut, sum(il7r_depth$count_out > 0 & il7r_depth$count_in > 0),
+            sum(il7r_depth$count_out > 0),
+            100 * sum(il7r_depth$count_out > 0 & il7r_depth$count_in > 0) /
+              sum(il7r_depth$count_out > 0),
+            nrow(il7r_depth)))
+
+# --- Soluble+ cells inside clones---
+# Clonal clustering tested on soluble+ barcode+ cells
+clone_cells <- il7r_tab %>%
+  filter(barcode != "none") %>%
+  mutate(count_in  = IL7R_TM_in_CaRe  + IL7R_exon6_TM_in_BRIE,
+         count_out = IL7R_TM_out_CaRe + IL7R_exon6_TM_out_BRIE) %>%
+  group_by(barcode) %>%
+  mutate(clone_size = n(), n_informative = sum((count_in + count_out) > 0)) %>%
+  ungroup()
+
+cat("\n=== Soluble+ cells available for a clonal test ===\n")
+cat(sprintf("Barcoded cells: %d | isoform-informative: %d | soluble+: %d (Catch*ReSeq only: %d)\n",
+            nrow(clone_cells), sum((clone_cells$count_in + clone_cells$count_out) > 0),
+            sum(clone_cells$count_out > 0), sum(clone_cells$IL7R_TM_out_CaRe > 0)))
+for (min_informative in c(2, 5, 10)) {
+  keep <- clone_cells %>% filter(n_informative >= min_informative)
+  cat(sprintf("  clones with >= %2d informative cells: %d clones | %d informative cells | %d soluble+\n",
+              min_informative, n_distinct(keep$barcode),
+              sum((keep$count_in + keep$count_out) > 0), sum(keep$count_out > 0)))
+}
+
+# --- Per-clone detection, Catch*ReSeq vs TenX ---
+# In-text read-out only; this does not produce a panel.
+min_clone_size <- 10
+clone_method <- il7r_tab %>%
+  filter(barcode != "none") %>%
+  group_by(barcode) %>%
+  summarise(clone_size = n(),
+            care_prop = mean((IL7R_TM_in_CaRe + IL7R_TM_out_CaRe) > 0),
+            brie_prop = mean((IL7R_exon6_TM_in_BRIE + IL7R_exon6_TM_out_BRIE) > 0),
+            .groups = "drop") %>%
+  filter(clone_size >= min_clone_size)
+
+cat(sprintf("\n=== Per-clone detection: clones with >= %d cells (n = %d) ===\n",
+            min_clone_size, nrow(clone_method)))
+cat(sprintf("Catch*ReSeq detects in a larger fraction of the clone: %d | TenX larger: %d | tied: %d\n",
+            sum(clone_method$care_prop > clone_method$brie_prop),
+            sum(clone_method$brie_prop > clone_method$care_prop),
+            sum(clone_method$care_prop == clone_method$brie_prop)))
+cat(sprintf("Median clone fraction resolved: Catch*ReSeq %.3f vs TenX %.3f (paired Wilcoxon p = %.3g)\n",
+            median(clone_method$care_prop), median(clone_method$brie_prop),
+            wilcox.test(clone_method$care_prop, clone_method$brie_prop,
+                        paired = TRUE)$p.value))
+cat(sprintf("Clones with zero TenX detection: %d | clone-size-weighted Pearson r = %.3f\n",
+            sum(clone_method$brie_prop == 0),
+            cov.wt(clone_method[, c("care_prop", "brie_prop")],
+                   wt = clone_method$clone_size, cor = TRUE)$cor[1, 2]))
+
+# --- PTPRC composite isoform state ---
+# Scores cassettes A and C jointly rather than one at a time, giving the in-text
+# number behind a statement about PTPRC isoform state overall. Cassette B is
+# excluded for the same reason as in Panel G, and a cell contributes only if it
+# carries molecules informative for every cassette, so this runs on fewer cells
+# than either cassette alone. Needs the Panel G chunk for `ptprc_umi`,
+# `CASSETTES`, `MIN_CLONE_CELLS`, `N_HERITABILITY_PERM` and
+# `permute_within_strata`.
+set.seed(42)
+
+# Per-cell psi for one cassette, from the molecules informative for it.
+composite_psi <- function(exon) {
+  d <- ptprc_umi %>%
+    group_by(cellID, UMI) %>%
+    summarise(inc = any(category == exon),
+              exc = any(category == paste0(exon, "_exclusion")), .groups = "drop") %>%
+    filter(inc | exc) %>%
+    group_by(cellID) %>%
+    summarise(n_umi = n(), psi = sum(inc) / n(), .groups = "drop")
+  names(d) <- c("cellID", paste0("n_umi_", exon), paste0("psi_", exon))
+  d
+}
+
+psi_wide <- Reduce(function(x, y) inner_join(x, y, by = "cellID"),
+                   lapply(CASSETTES, composite_psi))
+
+composite_cells <- psi_wide %>%
+  inner_join(combined_gated %>% select(cellID, barcode, cluster), by = "cellID") %>%
+  filter(barcode != "none") %>%
+  group_by(barcode) %>% filter(n() >= MIN_CLONE_CELLS) %>% ungroup()
+
+psi_matrix <- as.matrix(composite_cells[, paste0("psi_", CASSETTES)])
+
+# Multivariate one-way partition of the joint psi vector. For Euclidean distance
+# the distance-based (PERMANOVA) sums of squares equal the centroid form used
+# here, which avoids rebuilding an N x N distance matrix on every permutation.
+# Two statistics come out of the same partition:
+#   r2  -- SS_between / SS_total, the PERMANOVA statistic. It is inflated by the
+#          number of clones, so its permutation excess, not its raw value, is
+#          the effect size, and it is NOT comparable to the ICC_MIN floor.
+#   icc -- the mean-square form used by icc_one_way, which is comparable to the
+#          per-cassette ICCs and to ICC_MIN.
+permanova_partition <- function(values, groups) {
+  groups     <- droplevels(factor(groups))
+  n_total    <- nrow(values)
+  n_groups   <- nlevels(groups)
+  group_n    <- as.numeric(table(groups))
+  grand_mean <- colMeans(values)
+  centroids  <- t(vapply(split(seq_len(n_total), groups),
+                         function(idx) colMeans(values[idx, , drop = FALSE]),
+                         numeric(ncol(values))))
+  ss_total   <- sum(sweep(values, 2, grand_mean)^2)
+  ss_between <- sum(group_n * rowSums(sweep(centroids, 2, grand_mean)^2))
+  ss_within  <- ss_total - ss_between
+  ms_between <- ss_between / (n_groups - 1)
+  ms_within  <- ss_within  / (n_total - n_groups)
+  n0 <- (n_total - sum(group_n^2) / n_total) / (n_groups - 1)
+  c(r2  = ss_between / ss_total,
+    icc = (ms_between - ms_within) / (ms_between + (n0 - 1) * ms_within))
+}
+
+observed_composite <- permanova_partition(psi_matrix, composite_cells$barcode)
+
+composite_nulls <- list(
+  "global"          = function() sample(composite_cells$barcode),
+  "cluster-matched" = function() permute_within_strata(composite_cells$barcode,
+                                                       composite_cells$cluster))
+composite_draws <- lapply(composite_nulls, function(permute)
+  replicate(N_HERITABILITY_PERM, permanova_partition(psi_matrix, permute())))
+
+cat(sprintf("composite (%s): %d cells | %d clones\n",
+            paste(names(CASSETTES), collapse = "+"),
+            nrow(composite_cells), n_distinct(composite_cells$barcode)))
+# Coverage cost of requiring every cassette in the same cell.
+for (cassette in names(CASSETTES))
+  cat(sprintf("  cassette %s alone: %d cells with informative molecules\n",
+              cassette, nrow(composite_psi(CASSETTES[[cassette]]))))
+
+for (stat in c("r2", "icc")) {
+  p <- vapply(composite_draws, function(x)
+    (sum(x[stat, ] >= observed_composite[[stat]]) + 1) / (N_HERITABILITY_PERM + 1),
+    numeric(1))
+  excess <- vapply(composite_draws,
+                   function(x) observed_composite[[stat]] - median(x[stat, ]),
+                   numeric(1))
+  cat(sprintf("  %-3s observed %.4f | %s\n", stat, observed_composite[[stat]],
+              paste(sprintf("%s p = %.4g (excess over null median %+.4f)",
+                            names(p), p, excess), collapse = " | ")))
+}
+```
+
+### min_reads threshold for the host isoform calls
+
+Prerequisite: bamsort stepTwo `*_UMI_read_counts_full.csv` for the host targets
+and the integrated CSV (for the valid cellID list). Sweeps `min_reads` over the
+per-molecule read counts and prints, for each cassette, the exclusion fraction
+and the fraction of molecules kept, plus the PTPRC constant-exon exclusion rate,
+which is the internal false-exclusion floor. Backs the choice of `min_reads = 2`
+in the host CaRe extraction chunk.
+
+```{r}
+processed.dir <- paste0(data.root, "Figure4/CaRe/stepTwo/processed/")
+valid_cells   <- integrated$cellID
+min_reads_sweep <- c(1, 2, 3, 5, 10)
+
+# A constant exon cannot be spliced out, so any exclusion call on PTPRC_constant
+# is a false positive. Its rate at each threshold is the artifact floor that
+# min_reads has to suppress, measured without reference to BRIE2.
+cassettes <- list(
+  c("IL7R",  "IL7R_exon6_TM",  "IL7R_exon6_TM_exclusion"),
+  c("PTPRC", "PTPRC_exon4",    "PTPRC_exon4_exclusion"),
+  c("PTPRC", "PTPRC_exon6",    "PTPRC_exon6_exclusion"),
+  c("PTPRC", "PTPRC_constant", "PTPRC_constant_exclusion")
+)
+
+for (cassette in cassettes) {
+  gene <- cassette[1]; inclusion <- cassette[2]; exclusion <- cassette[3]
+  umis <- read.csv(paste0(processed.dir, gene, "_UMI_read_counts_full.csv")) %>%
+    filter(cellID %in% valid_cells, category %in% c(inclusion, exclusion))
+  cat(sprintf("\n=== %s vs %s ===\n", inclusion, exclusion))
+  for (min_reads in min_reads_sweep) {
+    kept <- umis %>% filter(read_count >= min_reads)
+    n_inclusion <- sum(kept$category == inclusion)
+    n_exclusion <- sum(kept$category == exclusion)
+    cat(sprintf("  min_reads >= %2d: inclusion = %6d | exclusion = %5d | exclusion fraction = %6.2f%% | molecules kept = %3.0f%%\n",
+                min_reads, n_inclusion, n_exclusion,
+                100 * n_exclusion / (n_inclusion + n_exclusion),
+                100 * nrow(kept) / nrow(umis)))
+  }
+}
+
+# read_count is per (cellID, UMI, category), so a molecule whose reads split
+# across two categories is thresholded on each part rather than on its total.
+il7r_umis <- read.csv(paste0(processed.dir, "IL7R_UMI_read_counts_full.csv")) %>%
+  filter(cellID %in% valid_cells)
+molecules <- il7r_umis %>%
+  group_by(cellID, UMI) %>%
+  summarise(n_categories = n(), reads_total = sum(read_count), .groups = "drop")
+split_exclusion <- il7r_umis %>%
+  filter(category == "IL7R_exon6_TM_exclusion", read_count == 1) %>%
+  left_join(molecules, by = c("cellID", "UMI"))
+cat(sprintf("\nIL7R molecules split across categories: %d / %d (%.1f%%)\n",
+            sum(molecules$n_categories > 1), nrow(molecules),
+            100 * mean(molecules$n_categories > 1)))
+cat(sprintf("Single-read exclusion rows whose molecule carries >= 2 reads overall: %d / %d\n",
+            sum(split_exclusion$reads_total >= 2), nrow(split_exclusion)))
+```
+
+# Liver
+
+## Extraction
+
+### Raw cellIDs from 10X
+
+Prerequisite: 10X CellRanger outputs under `singleCell/counts/GRCm39_*/outs/raw_feature_bc_matrix/`.
+
+```{r raw_cellIDs}
+raw_out_dir <- paste0(data.root, "Figure4/liver/singleCell/raw_cellIDs")
+dir.create(raw_out_dir, recursive = TRUE, showWarnings = FALSE)
+
+samples <- data.frame(
+  datasets = c("Esrp2KO_sham24_R1", "Normal_SHAM24_R2"),
+  samples  = c("Esrp2KO",           "Normal")
+)
+
+raw_cellIDs <- list()
+all_cellIDs <- data.frame(cellID = character(), sample = character(), stringsAsFactors = FALSE)
+
+for (i in seq_len(nrow(samples))) {
+  dataset_name <- samples$datasets[i]
+  sample_name  <- samples$samples[i]
+  folder <- paste0(data.root, "Figure4/liver/singleCell/counts/")
+  rawDataFolder <- paste0(folder, "GRCm39_", dataset_name, "/outs/raw_feature_bc_matrix/")
+
+  tryCatch({
+    rawdata <- Read10X(rawDataFolder)
+    umi_counts <- colSums(rawdata)
+    cell_ids <- names(umi_counts[umi_counts > 100])
+    raw_cellIDs[[sample_name]] <- cell_ids
+
+    all_cellIDs <- rbind(all_cellIDs,
+                         data.frame(cellID = cell_ids, sample = sample_name,
+                                    stringsAsFactors = FALSE))
+    write.csv(data.frame(cellID = cell_ids),
+              file.path(raw_out_dir, paste0(sample_name, "_raw_cellIDs.csv")),
+              row.names = FALSE)
+  }, error = function(e) {
+    cat("Error processing", dataset_name, ":", conditionMessage(e), "\n")
+  })
+  if (exists("rawdata")) { rm(rawdata); gc() }
+}
+
+write.csv(all_cellIDs, file.path(raw_out_dir, "all_raw_cellIDs.csv"), row.names = FALSE)
+```
+
+### Seurat integration
+
+Prerequisite: the liver cellranger outputs under
+`singleCell/counts/GRCm39_{Esrp2KO_sham24_R1,Normal_SHAM24_R2}/outs/filtered_feature_bc_matrix/`.
+
+```{r}
+output.dir <- paste0(data.root, "Figure4/liver/singleCell/Seurat/integrated/")
+umap.dir   <- paste0(data.root, "Figure4/liver/singleCell/Seurat/UMAPcoords/")
+dir.create(output.dir, recursive = TRUE, showWarnings = FALSE)
+dir.create(umap.dir,   recursive = TRUE, showWarnings = FALSE)
+
+load_packages("seurat_extra")   # scCustomize, for Add_Mito_Ribo
+
+INTEGRATION_SEED <- 42
+
+samples <- data.frame(
+  datasets = c("Esrp2KO_sham24_R1", "Normal_SHAM24_R2"),
+  samples  = c("Esrp2KO",           "Normal")
+)
+
+integrated_rds <- paste0(output.dir, "integrated.rds")
+
+if (file.exists(integrated_rds)) {
+  integrated <- readRDS(integrated_rds)
+} else {
+  sample_objects <- list()
+  for (i in seq_len(nrow(samples))) {
+    sample_name <- samples$samples[i]
+    input.dir <- paste0(data.root, "Figure4/liver/singleCell/counts/GRCm39_",
+                        samples$datasets[i], "/outs/filtered_feature_bc_matrix/")
+
+    sample_obj <- CreateSeuratObject(counts = Read10X(data.dir = input.dir),
+                                     project = sample_name,
+                                     min.cells = 3, min.features = 200)
+    sample_obj <- Add_Mito_Ribo(sample_obj, species = "mouse")
+    sample_obj <- subset(sample_obj,
+                         subset = nFeature_RNA > 200 & nFeature_RNA < 3500 &
+                                  nCount_RNA < 20000 & percent_mito < 5)
+    # Barcodes are prefixed here, which is what makes cellID join across the
+    # Ca*Re tables, the UMAP coords and the joint CSV.
+    sample_objects[[sample_name]] <- RenameCells(sample_obj,
+                                                 add.cell.id = sample_name)
+  }
+
+  integrated <- Reduce(function(x, y) merge(x, y), sample_objects)
+
+  set.seed(INTEGRATION_SEED)
+  integrated <- SCTransform(integrated, vst.flavor = "v2",
+                            seed.use = INTEGRATION_SEED)
+  integrated <- RunPCA(integrated, verbose = FALSE,
+                       seed.use = INTEGRATION_SEED)
+  # HarmonyIntegration takes no seed argument, so the session seed is what
+  # fixes its k-means initialisation.
+  set.seed(INTEGRATION_SEED)
+  integrated <- IntegrateLayers(integrated, method = HarmonyIntegration,
+                                orig.reduction = "pca",
+                                new.reduction = "harmony",
+                                normalization.method = "SCT",
+                                verbose = FALSE)
+
+  integrated <- FindNeighbors(integrated, reduction = "harmony",
+                              dims = 1:REDUCTION_DIMENSIONS)
+  integrated <- FindClusters(integrated, resolution = 0.7, algorithm = 4,
+                             random.seed = INTEGRATION_SEED)
+  integrated <- RunUMAP(integrated, dims = 1:REDUCTION_DIMENSIONS,
+                        reduction = "harmony", seed.use = INTEGRATION_SEED)
+
+  saveRDS(integrated, integrated_rds)
+}
+
+ggsave(paste0(output.dir, "integrated_umap.pdf"),
+       DimPlot(integrated, reduction = "umap"))
+ggsave(paste0(output.dir, "integrated_umap_orig.ident.pdf"),
+       DimPlot(integrated, reduction = "umap", split.by = "orig.ident"))
+
+# Cell-level table the Joining chunk reads. row.names are kept because that
+# chunk reads this file with row.names = "X".
+integrated[["RNA"]] <- JoinLayers(integrated[["RNA"]])
+umap_coords <- Embeddings(integrated, reduction = "umap")
+integrated_umap <- data.frame(
+  cellID  = colnames(integrated),
+  UMAP1   = umap_coords[, 1],
+  UMAP2   = umap_coords[, 2],
+  cluster = Idents(integrated),
+  size    = colSums(GetAssayData(integrated, assay = "RNA", layer = "counts")),
+  sample  = ifelse(integrated$orig.ident == "Normal", "WT", "KO")
+)
+write.csv(integrated_umap, paste0(umap.dir, "integrated_UMAP_coords.csv"))
+```
+
+
+### Ca*Re bamsort + minimums
+
+Prerequisite: `extractionScripts/submissionScripts/Figure4/liver_stepTwo_bamsort.sh`
+then `liver_stepThree_process.sh`, run on the Ca*Re BAMs.
+
+```{r}
+input_dir <- paste0(data.root, "Figure4/liver/CaRe/stepTwo/processed/")
+samples_df <- c("KO_Dgkd", "KO_Kras", "KO_Lsm14b", "KO_Nf2", "KO_Slkv4",
+               "WT_Dgkd", "WT_Kras", "WT_Lsm14b", "WT_Nf2", "WT_Slkv4")
+
+# min_umi is a coverage gate: a cell is admitted on 2 molecules that report on
+# the cassette exon, whichever isoform they carry. Nf2 and Slk probes sit in a
+# flanking constant exon, so those two also yield `<target>_exclusion` molecules
+# and either isoform can fill the quota; Kras, Lsm14b and Dgkd probes sit inside
+# the cassette exon, so their exclusion count is structurally zero and the quota
+# can only be filled by inclusion. Panel L reads the admitted set, not an
+# inclusion call, which is what keeps the two cases comparable.
+process_all_set_minimums("host", samples_df, input_dir,
+                           TRUE, output_dir = paste0(input_dir, "minimum/"),
+                           min_reads = 2, min_umi = 2)
+
+```
+
+### Joining
+
+Prerequisite: Seurat integration finished and `integrated_UMAP_coords.csv` written.
+
+```{r}
+groups <- c("KO" = "Esrp2KO", "WT" = "Normal")
+targets <- c("Dgkd", "Kras", "Lsm14b", "Nf2", "Slkv4")
+
+CaRe.dir <- paste0(data.root, "Figure4/liver/CaRe/stepTwo/processed/")
+umap.dir  <- paste0(data.root, "Figure4/liver/singleCell/Seurat/UMAPcoords/")
+
+umap_file <- paste0(umap.dir, "integrated_UMAP_coords.csv")
+umap_data <- read.csv(umap_file, row.names = "X")
+all_cells <- unique(as.character(umap_data$cellID))
+result <- data.frame(cellID = all_cells) %>%
+  left_join(umap_data %>% select(-any_of("V2"), -sample), by = "cellID")
+
+care_combined <- data.frame()
+
+for (i in seq_along(groups)) {
+  group_name <- names(groups)[i]
+  prefix     <- paste0(groups[i], "_")
+
+  care_files <- paste0(CaRe.dir, "minimum/", group_name, "_", targets, "_host_filtered.csv")
+  care_files <- care_files[file.exists(care_files)]
+  care_list  <- lapply(care_files, function(f) {
+    sdf <- read.csv(f); sdf$total <- NULL; sdf
+  })
+  care_data <- Reduce(function(x, y) merge(x, y, by = "cellID", all = TRUE), care_list)
+  care_data[is.na(care_data)] <- 0
+  care_data$cellID <- paste0(prefix, care_data$cellID)
+
+  care_combined <- bind_rows(care_combined, care_data)
+}
+
+# TenX values come from the integrated Seurat counts matrix
+seurat_obj <- readRDS(paste0(data.root, "Figure4/liver/singleCell/Seurat/integrated/integrated.rds"))
+rna_assay  <- JoinLayers(seurat_obj[["RNA"]])
+counts_mat <- GetAssayData(rna_assay, layer = "counts")
+
+targets <- c("Kras", "Nf2", "Slk", "Lsm14b", "Dgkd")
+present_targets <- intersect(targets, rownames(counts_mat))
+seurat_tenx <- as.data.frame(t(as.matrix(counts_mat[present_targets, , drop = FALSE])))
+seurat_tenx$cellID <- rownames(seurat_tenx)
+tenx_processed <- seurat_tenx %>%
+  rename_with(~ paste0(.x, "_TenX"), -cellID)
+result <- left_join(result, tenx_processed, by = "cellID")
+
+care_processed <- care_combined %>%
+  rename_with(~ paste0(.x, "_CaRe"), -cellID)
+result <- left_join(result, care_processed, by = "cellID")
+
+result[is.na(result)] <- 0
+# Zero-out CaRe calls in cells where Seurat does not detect the gene.
+# Targets with skipping reads carry a `<gene>_exclusion` column
+tenx_col_for <- function(care_col) {
+  paste0(sub("(_exclusion)?_CaRe$", "", care_col), "_TenX")
+}
+result <- result %>%
+  mutate(across(ends_with("_CaRe"), ~ ifelse(
+    pick(everything())[[tenx_col_for(cur_column())]] == 0, 0, .x
+  )))
+```
+
+### BRIE2 join and CSV save
+
+Prerequisite: BRIE2 run per cell, written to `BRIE2/brie2_per_cell_target_exons.csv`
+by `extractionScripts/submissionScripts/Figure4/brie2.sh liver_WT liver_KO`.
+
+```{r}
+brie <- read.csv(paste0(data.root, "Figure4/liver/singleCell/BRIE2/brie2_per_cell_target_exons.csv")) %>%
+  mutate(cellID = paste0(ifelse(sample == "WT", "Normal", "Esrp2KO"), "_", cell_barcode))
+
+brie_wide <- brie %>%
+  mutate(target = sub("_.*", "", gene)) %>%
+  pivot_wider(
+    id_cols = cellID,
+    names_from = target,
+    values_from = c(isoform1, isoform2, psi),
+    names_sep = "_"
+  ) %>%
+  rename_with(~ sub("^isoform1_", "", .) %>% paste0("_in_BRIE"),  starts_with("isoform1_")) %>%
+  rename_with(~ sub("^isoform2_", "", .) %>% paste0("_out_BRIE"), starts_with("isoform2_")) %>%
+  rename_with(~ sub("^psi_",      "", .) %>% paste0("_psi_BRIE"), starts_with("psi_"))
+brie_wide[is.na(brie_wide)] <- 0
+
+joint_data <- left_join(result, brie_wide, by = "cellID")
+
+save_dir <- paste0(data.root, "Figure4/liver/joint/integrated/")
+dir.create(save_dir, recursive = TRUE, showWarnings = FALSE)
+write.csv(joint_data, paste0(save_dir, "integrated_all_with_BRIE.csv"), row.names = FALSE)
+```
+
+## Plotting
+
+Prerequisites: the `## Extraction` chunks above, which write
+`integrated_all_with_BRIE.csv`.
+
+Data loading
+
+```{r}
+df <- read.csv(paste0(data.root, "Figure4/liver/joint/integrated/integrated_all_with_BRIE.csv")) %>%
+  mutate(genotype = factor(ifelse(grepl("^Normal_", cellID), "WT", "KO"),
+                           levels = c("WT", "KO")))
+
+output.dir <- paste0(plot.root, "Figure4/")
+dir.create(output.dir, recursive = TRUE, showWarnings = FALSE)
+```
+
+### Panel L
+
+Prerequisites: BRIE2 on TenX, via
+`extractionScripts/submissionScripts/Figure4/brie2.sh`.
+
+Exon-targeting (Kras, Lsm14b, Dgkd) scored on inclusion.
+Splice-targeting (Nf2 and Slk) scored on inclusion + exclusion.
+
+Not restricted to hepatocytes. Supp Fig 4H-J do restrict to hepatocytes
+
+```{r}
+exon_labels  <- c(Kras = "exon 5", Nf2 = "exon 15", Slk = "exon 13",
+                  Lsm14b = "exon 5", Dgkd = "exon 29")
+target_order <- c("Kras", "Nf2", "Slk", "Lsm14b", "Dgkd")
+
+# splice- vs exon-targeting
+care_informative <- function(d, gene_name) {
+  pos <- d[[paste0(gene_name, "_CaRe")]] > 0
+  exc_col <- paste0(gene_name, "_exclusion_CaRe")
+  if (exc_col %in% names(d)) pos <- pos | d[[exc_col]] > 0
+  pos
+}
+tenx_informative <- function(d, gene_name) {
+  # Match the TenX arm to the Ca*Re strategy
+  x <- d[[paste0(gene_name, "_in_BRIE")]]
+  if (paste0(gene_name, "_exclusion_CaRe") %in% names(d)) {
+    x <- x + d[[paste0(gene_name, "_out_BRIE")]]
+  }
+  x > 0
+}
+
+# Per-gene Ca*Re vs BRIE2(TenX) informative fraction in <gene>_TenX+ cells, per
+# genotype, with Clopper-Pearson CIs and a paired McNemar Ca*Re-vs-TenX p-value.
+compute_panel_data <- function(gene_name) {
+  tenx_col <- paste0(gene_name, "_TenX")
+
+  sc_frac <- df %>%
+    filter(.data[[tenx_col]] > 0) %>%
+    mutate(care_pos = care_informative(pick(everything()), gene_name),
+           brie_pos = tenx_informative(pick(everything()), gene_name)) %>%
+    group_by(genotype) %>%
+    summarise(total = n(),
+              `Ca*Re` = sum(care_pos),
+              TenX    = sum(brie_pos),
+              .groups = "drop") %>%
+    rename(condition = genotype) %>%
+    pivot_longer(c(`Ca*Re`, TenX),
+                 names_to = "method", values_to = "n_detected") %>%
+    mutate(value = n_detected / total) %>%
+    rowwise() %>%
+    mutate(ci = list(binom.test(n_detected, total)$conf.int),
+           ci_lower = ci[1], ci_upper = ci[2]) %>%
+    ungroup() %>% select(-ci) %>%
+    mutate(method    = factor(method, levels = c("TenX", "Ca*Re")),
+           condition = factor(condition, levels = c("WT", "KO")))
+
+  mcnemar_care_vs_tenx <- function(condition_name) {
+    cells <- df %>% filter(.data[[tenx_col]] > 0, genotype == condition_name)
+    if (nrow(cells) < 2) return(NA_real_)
+    tbl <- table(factor(care_informative(cells, gene_name), c(FALSE, TRUE)),
+                 factor(tenx_informative(cells, gene_name), c(FALSE, TRUE)))
+    tryCatch(mcnemar.test(tbl)$p.value, error = function(e) NA_real_)
+  }
+  sig_data <- sc_frac %>% distinct(condition) %>% rowwise() %>%
+    mutate(p_value = mcnemar_care_vs_tenx(as.character(condition)),
+           sig = case_when(is.na(p_value)  ~ "n.s.",
+                           p_value < 0.001 ~ "***",
+                           p_value < 0.01  ~ "**",
+                           p_value < 0.05  ~ "*",
+                           TRUE            ~ "n.s.")) %>% ungroup()
+
+  list(gene_name = gene_name, combined = sc_frac, sig_data = sig_data)
+}
+
+panel_data <- lapply(target_order, compute_panel_data)
+names(panel_data) <- target_order
+
+wt_detection <- bind_rows(lapply(target_order, function(g) {
+  d    <- panel_data[[g]]$combined %>% filter(condition == "WT")
+  care <- d %>% filter(method == "Ca*Re")
+  tenx  <- d %>% filter(method == "TenX")
+  data.frame(gene      = g,
+             total     = care$total,
+             care_n    = care$n_detected, care_frac = care$value,
+             tenx_n     = tenx$n_detected,  tenx_frac  = tenx$value,
+             fold      = care$value / tenx$value,
+             mcnemar_p = panel_data[[g]]$sig_data %>%
+                         filter(condition == "WT") %>% pull(p_value))
+}))
+cat("WT Ca*Re vs TenX detection across all target genes:\n")
+print(wt_detection)
+wt_significant <- wt_detection %>% filter(!is.na(mcnemar_p), mcnemar_p < 0.05)
+cat(sprintf(paste0("In %d of %d targets (%s), Ca*Re recovered a molecule informative ",
+                   "for the Esrp2 target exon in %.1f%%-%.1f%% of TenX+ WT cells ",
+                   "vs %.1f%%-%.1f%% by TenX (McNemar p = %.2g-%.2g)\n"),
+            nrow(wt_significant), nrow(wt_detection),
+            paste(wt_significant$gene, collapse = ", "),
+            100 * min(wt_significant$care_frac), 100 * max(wt_significant$care_frac),
+            100 * min(wt_significant$tenx_frac),  100 * max(wt_significant$tenx_frac),
+            min(wt_significant$mcnemar_p), max(wt_significant$mcnemar_p)))
+
+
+method_colors <- c("Ca*Re" = "#00AEEF", "TenX" = "#2B3990")
+method_labels <- c(
+  "TenX"  = "<span style='color:#2B3990'>**TenX**</span>",
+  "Ca*Re" = "<span style='color:#00AEEF'>**Ca&#42;Re**</span>")
+
+panel_one_genotype <- function(pd, target_genotype, y_global, y_ceiling,
+                               show_axis = FALSE) {
+  combined    <- pd$combined %>% filter(condition == target_genotype)
+  brackets_df <- pd$sig_data %>% filter(condition == target_genotype) %>%
+    mutate(x_left = 1, x_right = 2,
+           y_bracket = y_global * 1.15,
+           y_tick    = y_global * 0.03,
+           y_label   = y_bracket + y_global * 0.04)
+
+  ggplot(combined, aes(x = method, y = value, fill = method)) +
+    geom_col(width = 0.62) +
+    geom_errorbar(aes(ymin = ci_lower, ymax = ci_upper),
+                  width = 0.18, linewidth = 0.5, na.rm = TRUE) +
+    geom_segment(data = brackets_df, inherit.aes = FALSE,
+                 aes(x = x_left, xend = x_right, y = y_bracket, yend = y_bracket),
+                 linewidth = 0.4) +
+    geom_segment(data = brackets_df, inherit.aes = FALSE,
+                 aes(x = x_left, xend = x_left, y = y_bracket - y_tick, yend = y_bracket),
+                 linewidth = 0.4) +
+    geom_segment(data = brackets_df, inherit.aes = FALSE,
+                 aes(x = x_right, xend = x_right, y = y_bracket - y_tick, yend = y_bracket),
+                 linewidth = 0.4) +
+    geom_text(data = brackets_df, inherit.aes = FALSE,
+              aes(x = (x_left + x_right) / 2, y = y_label, label = sig), size = 4) +
+    scale_fill_manual(values = method_colors) +
+    scale_x_discrete(labels = method_labels) +
+    scale_y_continuous(limits = c(0, y_ceiling),
+                       breaks = scales::pretty_breaks(5),
+                       expand = expansion(mult = c(0, 0))) +
+    labs(x = NULL,
+         y = if (show_axis) "P(exon recovery | gene+)" else NULL,
+         title = sprintf("***%s***<br>%s", pd$gene_name, exon_labels[[pd$gene_name]]),
+         fill = NULL) +
+    theme_classic(base_size = 13) +
+    theme(legend.position = "none",
+          plot.title   = ggtext::element_markdown(hjust = 0.5, size = 13,
+                                                  lineheight = 1.2),
+          axis.text.x  = ggtext::element_markdown(size = 11),
+          axis.text.y  = if (show_axis) element_text(size = 11) else element_blank(),
+          axis.ticks.y = if (show_axis) element_line() else element_blank(),
+          axis.title.y = element_text(size = 12),
+          plot.margin  = margin(4, 5, 2, 2))
+}
+
+target_genotype <- "WT"
+y_global <- max(unlist(lapply(panel_data, function(pd) {
+  d <- pd$combined %>% filter(condition == target_genotype)
+  c(d$value, d$ci_upper)
+})), na.rm = TRUE)
+y_ceiling <- y_global * 1.25
+
+panel_plots <- Map(function(pd, first) {
+  panel_one_genotype(pd, target_genotype, y_global, y_ceiling, show_axis = first)
+}, panel_data, seq_along(panel_data) == 1)
+panel_combo <- wrap_plots(panel_plots, nrow = 1)
+
+ggsave(paste0(output.dir, "PanelL_alltargets_WT_barplot.pdf"),
+       panel_combo, width = 10, height = 3.6)
+print(panel_combo)
+```
+
+
+### Panel M
+
+Prerequisites: the `## Plotting` data-loading chunk above (`df`).
+
+```{r}
+df_umap <- df %>% mutate(Kras_CaRe_log = log1p(Kras_CaRe))
+color_limits <- c(0, max(df_umap$Kras_CaRe_log, na.rm = TRUE))
+
+plot_umap_single <- function(data, title, color_limits, color = "#00AEEF") {
+  data <- data[order(data$Kras_CaRe_log), ]
+  data$size_flag <- ifelse(data$Kras_CaRe_log > 0, "nonzero", "zero")
+
+  ggplot(data, aes(x = UMAP1, y = UMAP2)) +
+    geom_point(aes(color = Kras_CaRe_log, size = size_flag), shape = 16) +
+    scale_size_manual(values = c("zero" = 0.5, "nonzero" = 1.5)) +
+    scale_color_gradient(low = "gray93", high = color, limits = color_limits) +
+    coord_fixed() +
+    theme_classic() +
+    theme(legend.position = "bottom",
+          legend.title = element_text(size = rel(0.6)),
+          legend.text = element_text(size = rel(0.6), angle = 30),
+          axis.text = element_blank(),
+          axis.ticks = element_blank()) +
+    labs(title = title, color = "") +
+    guides(size = "none")
+}
+
+wt_umap <- plot_umap_single(df_umap %>% filter(genotype == "WT"),
+                            "Kras exon 5: Ca*Re (WT)", color_limits)
+ko_umap <- plot_umap_single(df_umap %>% filter(genotype == "KO"),
+                            "Kras exon 5: Ca*Re (KO)", color_limits)
+
+wt_ko_combined <- wt_umap + ko_umap +
+  plot_layout(ncol = 2, guides = "collect") &
+  theme(legend.position = "bottom")
+
+ggsave(paste0(output.dir, "PanelM_Kras_UMAP_WT_KO.pdf"),
+       wt_ko_combined, width = 8, height = 5)
+print(wt_ko_combined)
+```
+
+### Cluster 5 characterization
+
+Four quick takes to support the "cluster 5 is enriched for Kras exon
+inclusion after controlling for Kras expression" claim from Supp Fig 4J:
+
+1. **Top markers** of cluster 5 vs all other hepatocyte clusters (Wilcoxon,
+   only positive, |log2FC| > 0.5, p_adj < 0.05).
+2. **Liver zonation context** — row-z-scored mean log-norm expression of
+   canonical pericentral / midlobular / periportal markers across the six
+   hepatocyte clusters, to place cluster 5 in lobular geography.
+3. **WT/KO composition** of each hepatocyte cluster, to confirm cluster 5
+   isn't a genotype-skewed artifact.
+4. **Fetal-like / proliferative / Hippo-YAP markers** — Esrp2 KO has been
+   reported to reactivate a fetal program; this heatmap asks whether cluster
+   5 carries the fetal/proliferative signature that would explain residual
+   Esrp2-target inclusion despite the KO.
+
+Prerequisites: the liver `## Extraction` chunks above.
+
+```{r}
+hepatocyte_clusters <- c("1", "2", "3", "4", "5", "6")
+df <- read.csv(paste0(data.root, "Figure4/liver/joint/integrated/integrated_all_with_BRIE.csv")) %>%
+  mutate(genotype = factor(ifelse(grepl("^Normal_", cellID), "WT", "KO"),
+                           levels = c("WT", "KO")))
+
+seurat_obj <- readRDS(paste0(data.root, "Figure4/liver/singleCell/Seurat/integrated/integrated.rds"))
+seurat_obj[["RNA"]] <- JoinLayers(seurat_obj[["RNA"]])
+seurat_obj <- NormalizeData(seurat_obj, assay = "RNA", verbose = FALSE)
+DefaultAssay(seurat_obj) <- "RNA"
+
+seurat_cells   <- colnames(seurat_obj)
+cluster_lookup <- df %>%
+  mutate(seurat_cellID = ifelse(cellID %in% seurat_cells,
+                                cellID,
+                                sub("^(Normal|Esrp2KO)_", "", cellID))) %>%
+  filter(seurat_cellID %in% seurat_cells) %>%
+  select(seurat_cellID, cluster) %>%
+  mutate(cluster = as.character(cluster)) %>%
+  tibble::deframe()
+seurat_obj$df_cluster <- cluster_lookup[seurat_cells]
+Idents(seurat_obj) <- "df_cluster"
+
+# 1. Marker genes: cluster 5 vs other hepatocyte clusters --------------------
+c5_markers <- FindMarkers(seurat_obj,
+                          ident.1 = "5",
+                          ident.2 = setdiff(hepatocyte_clusters, "5"),
+                          only.pos = TRUE,
+                          logfc.threshold = 0.5,
+                          min.pct = 0.25,
+                          verbose = FALSE) %>%
+  tibble::rownames_to_column("gene") %>%
+  arrange(p_val_adj) %>%
+  filter(p_val_adj < 0.05)
+
+cat("\n=== Top 20 cluster 5 markers (vs hepatocyte clusters ",
+    paste(setdiff(hepatocyte_clusters, "5"), collapse = ", "), ") ===\n",
+    sep = "")
+print(head(c5_markers, 20))
+
+# 2. Liver zonation marker expression ----------------------------------------
+zonation_markers <- list(
+  pericentral = c("Glul", "Cyp2e1", "Oat", "Cyp1a2", "Axin2"),
+  midlobular  = c("Cyp2f2", "Hal"),
+  periportal  = c("Sds", "G6pc", "Cps1", "Aldh1b1", "Asl", "Hnf4a")
+)
+zone_genes <- stack(zonation_markers) %>%
+  rename(gene = values, zone = ind) %>%
+  mutate(gene = as.character(gene),
+         zone = factor(zone, levels = c("pericentral", "midlobular", "periportal")))
+zone_genes <- zone_genes %>% filter(gene %in% rownames(seurat_obj))
+
+hep_cells_mask <- !is.na(seurat_obj$df_cluster) &
+                  seurat_obj$df_cluster %in% hepatocyte_clusters
+hep_cells      <- seurat_cells[hep_cells_mask]
+hep_clusters   <- seurat_obj$df_cluster[hep_cells]
+expr_mat <- GetAssayData(seurat_obj, assay = "RNA", layer = "data")[
+  zone_genes$gene, hep_cells, drop = FALSE]
+
+zone_mean <- t(sapply(zone_genes$gene, function(g) {
+  tapply(expr_mat[g, ], hep_clusters, mean)
+}, simplify = TRUE))
+zone_mean <- zone_mean[, hepatocyte_clusters, drop = FALSE]
+zone_z    <- t(scale(t(zone_mean)))
+
+zone_long <- as.data.frame(zone_z) %>%
+  tibble::rownames_to_column("gene") %>%
+  pivot_longer(-gene, names_to = "cluster", values_to = "z") %>%
+  left_join(zone_genes, by = "gene") %>%
+  mutate(
+    cluster = factor(cluster, levels = hepatocyte_clusters),
+    gene    = factor(gene,    levels = zone_genes$gene)
+  )
+
+zone_heat <- ggplot(zone_long, aes(x = cluster, y = gene, fill = z)) +
+  geom_tile(color = "white") +
+  facet_grid(zone ~ ., scales = "free_y", space = "free_y", switch = "y") +
+  scale_fill_gradient2(name = "Z-score\n(row)",
+                       low = "#2166AC", mid = "white", high = "#B2182B",
+                       midpoint = 0) +
+  labs(x = "Hepatocyte cluster", y = NULL,
+       title = "Liver zonation marker expression (z-scored across clusters)") +
+  theme_minimal(base_size = 11) +
+  theme(strip.text.y.left = element_text(angle = 0, face = "bold"),
+        strip.placement   = "outside",
+        panel.grid        = element_blank(),
+        axis.text.y       = element_text(face = "italic"))
+
+print(zone_heat)
+
+# 3. WT/KO composition per hepatocyte cluster --------------------------------
+composition <- df %>%
+  filter(as.character(cluster) %in% hepatocyte_clusters) %>%
+  mutate(cluster = factor(as.character(cluster), levels = hepatocyte_clusters)) %>%
+  group_by(cluster, genotype) %>%
+  summarise(n = n(), .groups = "drop") %>%
+  group_by(cluster) %>%
+  mutate(frac          = n / sum(n),
+         cluster_total = sum(n)) %>%
+  ungroup()
+
+cluster_totals <- composition %>% distinct(cluster, cluster_total)
+
+cat("\n=== WT/KO composition per hepatocyte cluster ===\n")
+print(composition)
+
+comp_plot <- ggplot(composition, aes(x = cluster, y = frac, fill = genotype)) +
+  geom_col(width = 0.8, color = "black", linewidth = 0.3) +
+  geom_text(aes(label = n),
+            position = position_stack(vjust = 0.5),
+            size = 3, color = "white", fontface = "bold") +
+  geom_text(data = cluster_totals, inherit.aes = FALSE,
+            aes(x = cluster, y = 1.04, label = paste0("n=", cluster_total)),
+            size = 2.8) +
+  scale_fill_manual(values = c("WT" = "#C49A6C", "KO" = "#603913")) +
+  scale_y_continuous(labels = scales::percent_format(accuracy = 1),
+                     expand = expansion(mult = c(0, 0.08))) +
+  labs(x = "Hepatocyte cluster", y = "Fraction of cells", fill = NULL,
+       title = "WT/KO composition per hepatocyte cluster") +
+  theme_classic(base_size = 11)
+
+print(comp_plot)
+
+# 4. Fetal / proliferative / Hippo-YAP markers per cluster -------------------
+
+state_markers <- list(
+  `Fetal/progenitor`           = c("Afp", "Dlk1", "Epcam", "Anpep",
+                                    "Fxyd1", "Gjb1"),
+  `ESRP2 splice targets (TenX)` = c("Csnk1d", "Nf2", "Slk", "Arhgef10l",
+                                    "Flnb", "Kras"),
+  `YAP/TAZ targets`            = c("Areg", "Ptgs2", "Birc5", "Fgf1", "Itgb2")
+)
+state_genes_df <- stack(state_markers) %>%
+  rename(gene = values, category = ind) %>%
+  mutate(gene = as.character(gene)) %>%
+  filter(gene %in% rownames(seurat_obj))
+
+cat("\n=== Cluster-5 fetal / proliferative / YAP markers ===\n")
+cat("Detected (of requested):", nrow(state_genes_df), "of",
+    length(unlist(state_markers)), "\n")
+missing_genes <- setdiff(unlist(state_markers), state_genes_df$gene)
+if (length(missing_genes) > 0) {
+  cat("Missing from RNA assay:", paste(missing_genes, collapse = ", "), "\n")
+}
+
+state_expr <- GetAssayData(seurat_obj, assay = "RNA", layer = "data")[
+  state_genes_df$gene, hep_cells, drop = FALSE]
+state_mean <- t(sapply(state_genes_df$gene, function(g) {
+  tapply(state_expr[g, ], hep_clusters, mean)
+}, simplify = TRUE))
+state_mean <- state_mean[, hepatocyte_clusters, drop = FALSE]
+state_z    <- t(scale(t(state_mean)))
+
+state_long <- as.data.frame(state_z) %>%
+  tibble::rownames_to_column("gene") %>%
+  pivot_longer(-gene, names_to = "cluster", values_to = "z") %>%
+  left_join(state_genes_df, by = "gene") %>%
+  mutate(
+    cluster  = factor(cluster, levels = hepatocyte_clusters),
+    category = factor(category, levels = names(state_markers)),
+    gene     = factor(gene, levels = state_genes_df$gene)
+  )
+
+state_heat <- ggplot(state_long, aes(x = cluster, y = gene, fill = z)) +
+  geom_tile(color = "white") +
+  facet_grid(category ~ ., scales = "free_y", space = "free_y", switch = "y") +
+  scale_fill_gradient2(name = "Z-score\n(row)",
+                       low = "#2166AC", mid = "white", high = "#B2182B",
+                       midpoint = 0) +
+  labs(x = "Hepatocyte cluster", y = NULL,
+       title = "Fetal / proliferative / YAP-TAZ markers (z-scored across clusters)") +
+  theme_minimal(base_size = 11) +
+  theme(strip.text.y.left = element_text(angle = 0, face = "bold"),
+        strip.placement   = "outside",
+        panel.grid        = element_blank(),
+        axis.text.y       = element_text(face = "italic"))
+
+print(state_heat)
+```
+
+
+## In text numbers
+
+Prerequisites: the liver `## Extraction` chunks above.
+
+```{r}
+df <- read.csv(paste0(data.root, "Figure4/liver/joint/integrated/integrated_all_with_BRIE.csv")) %>%
+  mutate(genotype = factor(ifelse(grepl("^Normal_", cellID), "WT", "KO"),
+                           levels = c("WT", "KO")))
+hepatocyte_clusters <- c("1", "2", "3", "4", "5", "6")
+
+multi_hep <- df %>%
+  filter(genotype == "WT", as.character(cluster) %in% hepatocyte_clusters) %>%
+  mutate(n_care = (Kras_CaRe > 0) + (Nf2_CaRe > 0) + (Slk_CaRe > 0))
+
+cat(sprintf("WT hepatocytes that are multi-target Ca*Re+ (>=2 of Kras/Nf2/Slk): %d of %d\n",
+            sum(multi_hep$n_care >= 2), nrow(multi_hep)))
+```
+
+### Esrp2 knockout at the transcript level
+
+Prerequisites: the liver `df` above and
+`Figure4/liver/singleCell/Seurat/integrated/integrated.rds`.
+
+Supports "We confirmed Esrp2 expression knockout in these cells". Hepatocytes
+only (clusters 1-6), taken from `df` so the restriction does not depend on the
+cluster numbering of the object that happens to be on disk. Both the UMI totals
+and the per-cell detection counts are printed: Fisher's exact is a test of the
+cell-detection table, so that is the pair of numbers its p-value belongs to.
+
+```{r}
+seurat_obj <- readRDS(paste0(data.root,
+  "Figure4/liver/singleCell/Seurat/integrated/integrated.rds"))
+seurat_obj[["RNA"]] <- JoinLayers(seurat_obj[["RNA"]])
+seurat_obj <- NormalizeData(seurat_obj, assay = "RNA", verbose = FALSE)
+
+esrp2_umis <- GetAssayData(seurat_obj, assay = "RNA", layer = "counts")["Esrp2", ]
+
+hepatocytes <- df %>%
+  mutate(seurat_cellID = ifelse(cellID %in% colnames(seurat_obj), cellID,
+                                sub("^(Normal|Esrp2KO)_", "", cellID))) %>%
+  filter(seurat_cellID %in% colnames(seurat_obj),
+         as.character(cluster) %in% hepatocyte_clusters) %>%
+  mutate(esrp2_umis = esrp2_umis[seurat_cellID],
+         esrp2_pos  = esrp2_umis > 0)
+
+knockout_summary <- hepatocytes %>% group_by(genotype) %>%
+  summarise(n_cells = n(), n_esrp2_pos = sum(esrp2_pos),
+            total_esrp2_umis = sum(esrp2_umis),
+            pct_esrp2_pos = 100 * mean(esrp2_pos), .groups = "drop")
+print(as.data.frame(knockout_summary), row.names = FALSE)
+
+knockout_fisher <- fisher.test(
+  table(factor(hepatocytes$genotype, c("WT", "KO")),
+        factor(hepatocytes$esrp2_pos, c(FALSE, TRUE))))
+
+knockout_values <- function(target_genotype, column) {
+  knockout_summary[[column]][knockout_summary$genotype == target_genotype]
+}
+cat(sprintf(paste0("\nWe confirmed Esrp2 expression knockout in these cells ",
+                   "(%d / %s knockout hepatocytes versus %d / %s wildtype ",
+                   "hepatocytes; Fisher's exact p = %.3g).\n"),
+            knockout_values("KO", "n_esrp2_pos"),
+            format(knockout_values("KO", "n_cells"), big.mark = ","),
+            knockout_values("WT", "n_esrp2_pos"),
+            format(knockout_values("WT", "n_cells"), big.mark = ","),
+            knockout_fisher$p.value))
+cat(sprintf("Esrp2 UMIs behind those cells: %d (KO) and %d (WT).\n",
+            knockout_values("KO", "total_esrp2_umis"),
+            knockout_values("WT", "total_esrp2_umis")))
+
+# A knockout call rests on the absence being specific, so the one residual KO
+# cell is printed with its UMI count rather than summarised away.
+residual_knockout <- hepatocytes %>% filter(genotype == "KO", esrp2_umis > 0)
+if (nrow(residual_knockout) > 0) {
+  print(residual_knockout %>% select(cellID, cluster, esrp2_umis) %>%
+          as.data.frame(), row.names = FALSE)
+}
+cat(sprintf("KO cluster 5: %d cells, %d Esrp2 UMIs.\n",
+            sum(hepatocytes$genotype == "KO" & hepatocytes$cluster == 5),
+            sum(hepatocytes$esrp2_umis[hepatocytes$genotype == "KO" &
+                                       hepatocytes$cluster == 5])))
+```
+
+### Esrp2 level in cells with and without a detected exon
+
+Prerequisites: the chunk above, for `hepatocytes` and the normalized
+`seurat_obj`.
+
+Supports "Esrp2 expression did not differ between cells with and without
+Catch\*ReSeq-detected alternatively spliced exons". WT only, since Esrp2 is not
+detected in the knockout.
+
+One row per (cell, target) the cell expresses, rather than one row per cell:
+pooling on "Ca\*Re+ for any target" would give a cell expressing three targets
+three chances of a call and a cell expressing one only one, which enriches the
+Ca\*Re+ group for multi-target and deeper cells.
+
+```{r}
+POOLED_TARGETS <- c("Kras", "Nf2", "Slk")
+
+esrp2_lognorm <- GetAssayData(seurat_obj, assay = "RNA", layer = "data")["Esrp2", ]
+
+target_rows <- bind_rows(lapply(POOLED_TARGETS, function(target) {
+  hepatocytes %>%
+    filter(genotype == "WT", .data[[paste0(target, "_TenX")]] > 0) %>%
+    transmute(cellID, target,
+              care_pos  = .data[[paste0(target, "_CaRe")]] > 0,
+              esrp2     = esrp2_lognorm[seurat_cellID],
+              esrp2_pos = esrp2 > 0,
+              nCount    = seurat_obj$nCount_RNA[seurat_cellID])
+}))
+
+row_summary <- target_rows %>% group_by(care_pos) %>%
+  summarise(rows = n(), n_esrp2_pos = sum(esrp2_pos),
+            pct_esrp2_pos = 100 * mean(esrp2_pos), .groups = "drop")
+print(as.data.frame(row_summary), row.names = FALSE)
+
+esrp2_fisher <- fisher.test(table(factor(target_rows$care_pos, c(FALSE, TRUE)),
+                                  factor(target_rows$esrp2_pos, c(FALSE, TRUE))))
+
+row_values <- function(status, column) row_summary[[column]][row_summary$care_pos == status]
+cat(sprintf(paste0("\nEsrp2 expression did not differ between cells with and ",
+                   "without Catch*ReSeq-detected alternatively spliced exons ",
+                   "(%d / %d (%.1f%%) versus %d / %d (%.1f%%); Fisher's exact ",
+                   "p = %.2g).\n"),
+            row_values(TRUE, "n_esrp2_pos"), row_values(TRUE, "rows"),
+            row_values(TRUE, "pct_esrp2_pos"),
+            row_values(FALSE, "n_esrp2_pos"), row_values(FALSE, "rows"),
+            row_values(FALSE, "pct_esrp2_pos"), esrp2_fisher$p.value))
+
+# Esrp2 detection tracks library size, so the claim is also given adjusted for
+# depth and for which target a row belongs to.
+cat(sprintf("Wilcoxon on log-normalized Esrp2: p = %.2g\n",
+            wilcox.test(esrp2 ~ care_pos, data = target_rows)$p.value))
+print(summary(glm(esrp2_pos ~ care_pos + target + log1p(nCount),
+                  data = target_rows, family = binomial))$coefficients)
+cat(sprintf("Rows from cells contributing more than one: %d of %d\n",
+            sum(table(target_rows$cellID)[table(target_rows$cellID) > 1]),
+            nrow(target_rows)))
+```

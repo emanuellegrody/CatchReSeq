@@ -1,0 +1,7 @@
+sample,counts_dir,raw_cellIDs_dataset,raw_cellIDs_folder
+D0,extractedData/Figure1/singleCell/counts/Mmul_10_mac239/Mmul_10_mac239_LP29_D0,LP29_D0,extractedData/Figure1/singleCell/counts/Mmul_10_mac239/
+D195,extractedData/Figure1/singleCell/counts/Mmul_10_mac239/Mmul_10_mac239_LP29_D195,LP29_D195,extractedData/Figure1/singleCell/counts/Mmul_10_mac239/
+Invitro,extractedData/Figure1/singleCell/counts/Mmul_10_mac239/Mmul_10_mac239_invitro,invitro,extractedData/Figure1/singleCell/counts/Mmul_10_mac239/
+Pacute,extractedData/Figure1/singleCell/counts/Mmul_10_mac239v5_P_acute_combined,P_acute_combined,extractedData/Figure1/singleCell/counts/
+W0,extractedData/Figure1/singleCell/counts/Mmul_10_mac239/Mmul_10_mac239_W0,W0,extractedData/Figure1/singleCell/counts/Mmul_10_mac239/
+W2,extractedData/Figure1/singleCell/counts/Mmul_10_mac239/Mmul_10_mac239_W2,W2,extractedData/Figure1/singleCell/counts/Mmul_10_mac239/

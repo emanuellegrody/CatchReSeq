@@ -1,0 +1,22 @@
+# BRIE2 runs behind Figure4. One row per library; brie2.sh submits the rows you
+# name, or every row if you name none.
+#
+#   row          key used to select the row and name the logs
+#   counts_dir   cellranger parent dir, relative to DATA_ROOT
+#   sample       cellranger run id (the folder inside counts_dir)
+#   out_name     output subfolder inside output_dir, and the name the .Rmd uses
+#   gff          splice-event annotation, relative to GENOME_ROOT
+#   output_dir   where BRIE2 writes, relative to DATA_ROOT
+#   barcode_csv  OPTIONAL target-gene cell list, relative to DATA_ROOT. When set,
+#                filter_count_matrices.py writes filtered_barcodes.tsv first and
+#                BRIE2 is restricted to those cells; otherwise cellranger's
+#                filtered barcode list is used.
+#   export_csv   per-cell CSV the worker writes inside out_name
+#   events       OPTIONAL space-separated event ids to restrict the export to
+#
+# The liver rows need SE_events_mm39.gff3 and the *_targetGenes.csv cell lists,
+# neither of which is currently on disk; see the Liver section of Figure4.Rmd.
+row,counts_dir,sample,out_name,gff,output_dir,barcode_csv,export_csv,events
+invitro,extractedData/Figure4/singleCell/counts/concat,Mmul_10_mac239_GFP_GFP_GEX,invitro,SE_events_Mmul_10_targets.gff3,extractedData/Figure4/singleCell/BRIE2,,brie2_per_cell.csv,
+liver_WT,extractedData/Figure4/liver/singleCell/counts,GRCm39_Normal_SHAM24_R2,WT,SE_events_mm39.gff3,extractedData/Figure4/liver/singleCell/BRIE2,extractedData/Figure4/liver/singleCell/Seurat/UMAPcoords/Normal_targetGenes.csv,brie2_per_cell_target_exons.csv,
+liver_KO,extractedData/Figure4/liver/singleCell/counts,GRCm39_Esrp2KO_sham24_R1,KO,SE_events_mm39.gff3,extractedData/Figure4/liver/singleCell/BRIE2,extractedData/Figure4/liver/singleCell/Seurat/UMAPcoords/Esrp2KO_targetGenes.csv,brie2_per_cell_target_exons.csv,

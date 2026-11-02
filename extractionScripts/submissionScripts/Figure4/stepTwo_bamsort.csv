@@ -1,0 +1,4 @@
+sample,raw_cellIDs_dataset,raw_cellIDs_folder,raw_cellIDs_sample
+PTPRC,GFP_invitro,extractedData/Figure4/singleCell/counts/concat/,GFP_invitro
+BCL2L1,GFP_invitro,extractedData/Figure4/singleCell/counts/concat/,GFP_invitro
+IL7R,GFP_invitro,extractedData/Figure4/singleCell/counts/concat/,GFP_invitro

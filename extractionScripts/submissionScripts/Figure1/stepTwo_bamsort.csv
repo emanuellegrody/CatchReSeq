@@ -1,0 +1,7 @@
+sample,group,alignment_bam_ids,raw_cellIDs_dataset,raw_cellIDs_folder
+Pacute,viremia,Pacute_env_PL|Pacute_SSenv_PL|Pacute_pol_PL|Pacute_D1_PL|Pacute_tat,P_acute_GEX,extractedData/Figure1/singleCell/counts/
+W2,viremia,W2_env_PL|W2_SSenv_PL|W2_pol_PL|W2_D1_PL|W2_tat,W2,extractedData/Figure1/singleCell/counts/
+D195,ART,D195_env_PL|D195_SSenv_PL|D195_pol_PL|D195_D1_PL|D195_tat,LP29_D195,extractedData/Figure1/singleCell/counts/
+Invitro,invitro,Invitro_env_PL|Invitro_SSenv_PL|Invitro_pol_PL|Invitro_D1_PL|Invitro_tat,invitro,extractedData/Figure1/singleCell/counts/
+D0,uninfected,D0_env_PL|D0_SSenv_PL|D0_pol_PL|D0_D1_PL|D0_tat,LP29_D0,extractedData/Figure1/singleCell/counts/
+W0,uninfected,W0_env_PL|W0_SSenv_PL|W0_pol_PL|W0_D1_PL|W0_tat,W0,extractedData/Figure1/singleCell/counts/

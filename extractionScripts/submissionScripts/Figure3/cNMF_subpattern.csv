@@ -1,0 +1,13 @@
+# Second cNMF pass on the cleaned objects: Figure3's cnmf_configs chunk drops
+# the CD3D-negative contaminant patterns and writes <base>_counts_cleaned.tsv
+# into subpattern/, which this pass factorizes again.
+#   k is the K chosen for that cleaned run, as the usage filename records it.
+#   D195_cleaned was run before the outputs moved to the Figure1 tree and still
+#   lives under Figure1/singleCell/cNMF/subpattern/, which is where Figure3.Rmd
+#   reads it from. Re-running it here would write it to the Figure1 tree; the
+#   .Rmd path would then need updating to match.
+sample,run_name,k
+invitro,Invitro_cleaned,5
+W2,W2_cleaned,7
+D195,D195_cleaned,6
+Pacute,Pacute_cleaned,6

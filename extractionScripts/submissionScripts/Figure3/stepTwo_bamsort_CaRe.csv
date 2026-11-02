@@ -1,0 +1,4 @@
+sample,alignment_bam_ids,raw_cellIDs_dataset,raw_cellIDs_folder
+A_,A_D1|A_D4|A_pol|A_env|A_nef,HIV-A,extractedData/Figure3/singleCell/counts/
+C_,C_D1|C_D4|C_pol|C_env|C_nef,HIV-C,extractedData/Figure3/singleCell/counts/
+D_,D_D1|D_D4|D_pol|D_env|D_nef,HIV-D,extractedData/Figure3/singleCell/counts/
