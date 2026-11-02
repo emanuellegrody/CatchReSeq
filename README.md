@@ -1,46 +1,32 @@
 # Catch*ReSeq
 
-Scripts to reproduce every figure in the Catch*ReSeq manuscript: targeted
-capture and re-sequencing of viral transcripts from single-cell libraries,
-applied to SIV in rhesus macaque CD4+ T cells, HIV in human donor samples, and
-host splice isoforms in mouse liver.
-
-The repository is self-contained. Nothing here calls a script outside it, and
-every filesystem location is set in one place.
+Code to reproduce analysis and figures in the Catch*ReSeq manuscript (Grody et al., 2026)
 
 ## Layout
 
 ```
 extractionScripts/
-  pipelineScripts/      workers -- the .py and .R that do the work, by stage
+  pipelineScripts/      worker scripts
     cellranger/         cellranger count, one worker per library type
-    bamsort/            read extraction and the stepTwo-stepFive chain
-      coordinates/      the per-genome target region tables stepTwo reads
+    bamsort/            BAM file read extraction
+      coordinates/      the per-genome target region tables for stepTwo
     polya/              internal vs terminal priming (Figure2)
-    isoform/            host cassette-exon ratios: BRIE2 (Figure4)
-    cnmf/               cNMF factorisation and its .h5ad input (Figure3)
+    isoform/            host exon ratios: BRIE2 (Figure4)
+    cnmf/               cNMF factorization (Figure3)
     fish/               smFISH quantification (Figure2)
-    memoryseq/          clone bulk RNA-seq and the heritable-gene call (Figure4)
-    publicData/         re-analysed published datasets: download, ADT gates,
-                        label fixes, and the analyses specific to them
+    memoryseq/          clone bulk RNA-seq and the heritable-gene analysis (Figure4)
+    publicData/         re-analyzed public datasets: download, ADT gates,
+                        label fixes, and downstream analyses
   submissionScripts/    SLURM wrappers and their sample CSVs, one dir per figure
 plotScripts/
   Figure1-4.Rmd         one notebook per main figure
   SuppFigs.Rmd          every supplementary panel
-  functions.R           the analysis and plotting library the notebooks source
-  packages.R            dependency install and version pinning
-  config.R              the four filesystem roots -- the only thing to edit
-  referenceData/        third-party reference files the notebooks read directly
+  functions.R           analysis and plotting functions for notebooks
+  packages.R            package dependency install and versions
+  config.R              the four filesystem roots -- update upon download
+  referenceData/        third-party reference files
 ```
 
-`pipelineScripts/` is grouped by pipeline stage rather than by figure, because
-a worker is usually shared across figures -- `stepThree_process_worker.sh` is
-driven by ten wrappers spanning three figures and two public datasets.
-
-A worker never hardcodes a path: `submissionScripts/<Figure>/*.sh` sets the
-environment and submits, and the worker in `pipelineScripts/` reads it. Both
-resolve each other from their own location, so the repository can be cloned
-anywhere.
 
 ## Configuring where the data lives
 
@@ -55,10 +41,9 @@ variable:
 | `CARE_PUBLIC_ROOT` | `…/publicData/` | re-analysed published datasets |
 
 The shell side takes `DATA_ROOT` and `GENOME_ROOT` for the same purpose.
-Nothing else needs changing to run this against your own copy of the data.
+Nothing else needs changing to run.
 
-`config.R` must be sourced **between** `packages.R` and `functions.R`, because
-`functions.R` builds default arguments from `data.root`:
+Source the files in this order:
 
 ```r
 source("packages.R")
@@ -86,9 +71,7 @@ The extraction chain for the single-cell arms runs in order:
 `runAll.sh` in `submissionScripts/Figure1/` drives the whole chain for the SIV
 arm and waits between steps.
 
-The LD002 clone panel in Figure 4 is bulk RNA-seq and does not join that chain.
-It runs on its own, and is the one stage driven by Nextflow rather than by
-`sbatch` directly:
+Figure4 clonal expansion runs separately, driven by Nextflow:
 
 | step | writes |
 |---|---|
@@ -108,22 +91,8 @@ It runs on its own, and is the one stage driven by Nextflow rather than by
 - SLURM. The wrappers call `sbatch` and are written for an account/partition
   pair you will want to change at the top of each.
 
-## Two scripts are not included
+## bamsort script availability
 
 The stepTwo read-extraction scripts, `bamsort_alignment_reads.py` and
-`bamsort_alignment_reads_host.py`, are withheld and shared on request. Every
-other step is here, and the figures are built from stepThree/stepFour tables
-rather than stepTwo output, so the plotting path is unaffected — see
-[PRIVATE_SCRIPTS.md](PRIVATE_SCRIPTS.md) for exactly where the chain stops.
+`bamsort_alignment_reads_host.py`, are withheld and shared on request.
 
-## Data
-
-The sequencing data and the extracted intermediates are not in this repository;
-see the data availability statement in the paper. The intermediates the notebooks
-read are the stepThree and stepFour tables, which is what makes the plotting path
-independent of the two withheld scripts.
-
-[DATA_INPUTS.md](DATA_INPUTS.md) lists every raw input the extraction scripts
-read -- which accessions are ours to deposit, which are published and only
-cited, which references have to be rebuilt, and the arms whose FASTQs are no
-longer on disk.
