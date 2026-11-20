@@ -96,8 +96,6 @@ for coord in coords:
     output_file = f"${OUTPUT_ROOT}{prefix}_bamsort_alignment_{target}.csv"
     print(f"  Region: {target} ({chrom}:{start}-{end})")
 
-    # No --windows: a single whole-gene window means primary_count would equal
-    # count, so there is no boundary read to charge to one region over another.
     cmd = ["python3", "${ALIGNMENT_SCRIPT}", bam_file, chrom, start, end, output_file]
     try:
         subprocess.run(cmd, check=True, capture_output=True, text=True)

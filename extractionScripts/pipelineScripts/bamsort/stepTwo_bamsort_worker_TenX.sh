@@ -117,8 +117,6 @@ for coord in coords:
     output_file = f"${OUTPUT_ROOT}{sample}_bamsort_alignment_{target}.csv"
     print(f"  Region: {target} ({start}-{end})")
 
-    # --windows passes the whole coordinate table so the script can charge a
-    # boundary-spanning read to one region only (primary_count).
     cmd = ["python3", "${ALIGNMENT_SCRIPT}", bam_file, "${VIRAL_CONTIG}", start, end, output_file,
            "--windows", "${COORDS_CSV}"]
     try:

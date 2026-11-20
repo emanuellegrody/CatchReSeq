@@ -3669,11 +3669,6 @@ hxb2_per_cell <- function(sample, bamsort_dir) {
     d <- read.csv(f, colClasses = c(UMI = "character", cellID = "character",
                                     count = "integer"))
     if (nrow(d) == 0) return(NULL)
-    # Adjacent junction windows mean one read can clear min_overlap in two of
-    # them and be written to both files, so summing `count` over regions counts
-    # it twice. `primary_count` charges each read to the single window it
-    # overlaps most. Tables written before that column existed fall back to
-    # `count`, matching `bamsort_read_column` on the pipeline side.
     if ("primary_count" %in% names(d)) {
       d$count <- d$primary_count
     } else {

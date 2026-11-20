@@ -97,7 +97,6 @@ while IFS=, read -r SAMPLE _rest; do
         IFS=, read -r TARGET START END <<< "$line"
         [ -z "${TARGET:-}" ] && continue
         OUT="${OUTPUT_ROOT}/${SAMPLE}_bamsort_alignment_${TARGET}.csv"
-        # --windows charges a read spanning two adjacent targets to one of them
         if python3 "$ALIGN_SCRIPT" "$BAM" "$VIRAL_CONTIG" "$START" "$END" "$OUT" \
                --windows "$COORDS_CSV"; then
             rows=$(($(wc -l < "$OUT") - 1))

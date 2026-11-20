@@ -3997,10 +3997,6 @@ read_care_umis <- function(pool) {
 
 # Per-UMI depth from a set of bamsort alignment region tables (one library, or
 # the pool's 10X alignment); a UMI seen in several regions keeps its summed reads.
-# `primary_count` is the column to sum, as in `hxb2_per_cell`: adjacent junction
-# windows mean one read can clear min_overlap in two of them and be written to
-# both files, so summing `count` across regions would charge it twice and a
-# D1-probe molecule would reach min_reads on half the reads it should need.
 read_alignment_umis <- function(prefix, alignment_dir, pool) {
   region_tables <- lapply(giron_regions, function(region) {
     region_file <- file.path(alignment_dir,

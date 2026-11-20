@@ -275,11 +275,6 @@ resolve_multimap <- function(df) {
   return(result)
 }
 ## CaRe and TenX: read and process BAM
-# Read support for a bamsort alignment table. Adjacent regions mean one read can
-# clear min_overlap in two neighbouring windows and be written to both files, so
-# summing `count` over regions counts it twice. `primary_count` charges each read
-# to the single region it overlaps most, which makes the sum a distinct-read
-# count. Tables written before that column existed fall back to `count`.
 bamsort_read_column <- function(file_data) {
   if ("primary_count" %in% colnames(file_data)) "primary_count" else "count"
 }
