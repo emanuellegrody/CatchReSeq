@@ -254,15 +254,16 @@ fi
 if wants adtgate; then
     banner "adtgate"
     mkdir -p "${SCRIPT_DIR}/logs"
-    for g in collora_adtgate adtgate_final; do
+    for g in adtgate_collora adtgate_hivseq; do
         echo "--- ${g}.R ---"
         id="$(submit $(dep_arg) \
                 --job-name="${g}" \
-                --account=b1042 --partition=genomics \
+                --account="${SLURM_ACCOUNT:-b1042}" \
+                --partition="${SLURM_PARTITION:-genomics}" \
                 --nodes=1 --ntasks=4 --mem=64G --time=4:00:00 \
                 --output="${SCRIPT_DIR}/logs/${g}_%j.out" \
                 --error="${SCRIPT_DIR}/logs/${g}_%j.err" \
-                --wrap="module purge; module load R/4.4.0; Rscript ${PIPE}/${g}.R")"
+                --wrap="module purge; module load R/4.4.0; Rscript ${PIPE}/publicData/${g}.R")"
         echo "  job ${id:-<dry>}"
     done
 fi

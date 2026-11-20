@@ -42,7 +42,7 @@ DATA_ROOT="${DATA_ROOT:-/projects/b1042/GoyalLab/egrody}"
 COUNTS_ROOT="${DATA_ROOT}/publicData/Colloraetal2022/counts"
 GENOME_PREFIX="GRCh38_HXB2"          # cellranger run-dir prefix (basename of the reference)
 VIRAL_CONTIG="HXB2"                  # contig name in the joint reference / BAM
-OUTPUT_ROOT="${DATA_ROOT}/extractedData/Collora/bamsort"
+OUTPUT_ROOT="${DATA_ROOT}/extractedData/Figure3/publicData/Collora/bamsort"
 
 for f in "$MANIFEST" "$COORDS_CSV" "$ALIGN_SCRIPT" "$SPLICE_SCRIPT"; do
     if [ ! -f "$f" ]; then

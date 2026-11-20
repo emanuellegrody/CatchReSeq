@@ -21,7 +21,10 @@ GENOME_ROOT="${GENOME_ROOT:-/projects/b1042/GoyalLab/egrody/genomes}"
 
 export FASTQ_SRC_DIR="${DATA_ROOT}/publicData/Gironetal2024/fastq"
 export TRANSCRIPTOME="${GENOME_ROOT}/GRCh38_HXB2"
-export FEATURE_REF="${DATA_ROOT}/publicData/Gironetal2024/feature_ref/feature_reference.csv"
+# The feature reference (ADT and hashtag barcodes) is ours and ships with the
+# repository, so it resolves from this script's own location rather than from
+# the data root. Override FEATURE_REF to use a different panel.
+export FEATURE_REF="${FEATURE_REF:-${PIPELINE_DIR}/cellranger/feature_reference.csv}"
 export OUTPUT_PATH="${DATA_ROOT}/publicData/Gironetal2024/counts"
 export OUTS_ONLY="FALSE"
 

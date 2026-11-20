@@ -4,7 +4,7 @@ author: "Emanuelle Grody"
 output: html_document
 ---
 
-Source this files first before running any analysis:
+Source these files first before running any analysis:
 
 ```{r, message=FALSE, warning=FALSE}
 source("packages.R")
@@ -303,7 +303,7 @@ write.csv(onlyCaRe, paste0(output_dir, "KLRB1_onlyCaRe.csv"), row.names = FALSE)
 write.csv(current_df, paste0(output_dir, "KLRB1_all.csv"), row.names = FALSE)
 ```
 
-## Plotting
+## Plotting: Panels B, C and Supp Fig 1 Panel M
 
 Prerequisites: the `### joint` chunk above, which writes `KLRB1_all.csv`.
 
@@ -371,7 +371,7 @@ cat("\n=== W0 KLRB1 ===\n")
 print_jitter_r2(p, "Panel C")
 ```
 
-### Venn Diagram
+### Panel B: Venn diagram
 
 Prerequisites: the `### joint` chunk above.
 
@@ -457,7 +457,7 @@ outfile <- paste0(output.dir, "PanelB_venn_KLRB1.pdf")
 plot_venn(nrow(tenx_only_df), nrow(care_only_df), nrow(both_df), "KLRB1", outfile)
 ```
 
-### Panel D
+### Panel D: W0 saturation
 
 Prerequisites: the `### TenX` and `### Ca*Re` chunks above, which write the
 per-UMI read count tables this reads.
@@ -916,10 +916,14 @@ for (group_name in names(integration_groups)) {
 ```
 
 
-## Plotting
+## Plotting: Panels E, F, G, H, I, J, K
 
 Prerequisites: the SIV `### joint` and integration chunks above, which write the
 per-sample and per-group joint dataframes.
+
+`umap_panel` and `jitter_panel` in the chunk below map each sample to its panel
+letter: UMAP densities are E (D0_W0), F (Invitro), H (Pacute_W2) and J (D195);
+jitters are G (Invitro), I (Pacute_W2) and K (D195).
 
 ```{r}
 output.dir <- paste0(plot.root, "Figure1/")
@@ -1001,7 +1005,10 @@ for (sample_name in names(joint_data)) {
 ```
 
 
-### Venn Diagrams
+### Panels F, H, J: Venn diagrams
+
+The Venn panels share the UMAP panel letters: F is Invitro, H is Pacute_W2 and
+J is D195.
 
 Prerequisites: the SIV `### joint` and integration chunks above.
 

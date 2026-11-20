@@ -1,0 +1,6 @@
+Sample,Target,Start,End,Rows,Total_Reads
+D195_tat,LTR_D1,1,422,0,0
+D195_tat,D1_A1,432,4642,79,112
+D195_tat,A1_D4,4652,6035,7,7
+D195_tat,D4_A7,6045,8243,6,6
+D195_tat,A7_LTR,8253,9578,15,21

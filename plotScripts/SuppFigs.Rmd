@@ -2472,15 +2472,15 @@ options(future.globals.maxSize = 8 * 1024^3)  # 8 GiB
 public_paths <- list(
   Collora = list(
     counts  = paste0(public.root, "Colloraetal2022/counts"),
-    bamsort = paste0(data.root, "Collora/bamsort"),
-    rds     = paste0(data.root, "Collora/Seurat/RDS_publishedQC"),
+    bamsort = paste0(data.root, "Figure3/publicData/Collora/bamsort"),
+    rds     = paste0(data.root, "Figure3/publicData/Collora/Seurat/RDS_publishedQC"),
     qc      = list(min_features = 500, max_features = Inf,
                    max_counts = Inf, max_mito = 10),
     hiv_rule = "collora"),
   HIVseq = list(
     counts  = paste0(public.root, "HIVseq/counts"),
-    bamsort = paste0(data.root, "HIVseq/bamsort"),
-    rds     = paste0(data.root, "HIVseq/Seurat/RDS_publishedQC"),
+    bamsort = paste0(data.root, "Figure3/publicData/HIVseq/bamsort"),
+    rds     = paste0(data.root, "Figure3/publicData/HIVseq/Seurat/RDS_publishedQC"),
     qc      = list(min_features = 500, max_features = Inf,
                    max_counts = Inf, max_mito = 15),
     hiv_rule_published = "frouard"))
@@ -2883,9 +2883,9 @@ reanalysis_datasets <- c("Collora", "HIVseq")
 
 reanalysis_paths <- list(
   Collora = c(public_paths$Collora, list(
-    gate = paste0(data.root, "Collora/ADT/CD4T_cellIDs.csv"))),
+    gate = paste0(data.root, "Figure3/publicData/Collora/ADT/CD4T_cellIDs.csv"))),
   HIVseq = c(public_paths$HIVseq, list(
-    gate = paste0(data.root, "HIVseq/ADT/CD4T_cellIDs.csv"))))
+    gate = paste0(data.root, "Figure3/publicData/HIVseq/ADT/CD4T_cellIDs.csv"))))
 
 reanalysis_collora <- tibble::tribble(~sample, ~condition,
   "DV739","Viremic","DV799","Viremic","DV910","Viremic","IV236","Viremic",
@@ -3154,11 +3154,11 @@ output.dir   <- paste0(data.root, "Figure1/combined/")
 # read from `public_paths` so the chunk stays runnable on its own.
 min_hiv_reads <- 2
 lowburden_hiv <- list(
-  Collora = list(bamsort  = paste0(data.root, "Collora/bamsort"),
-                 gate     = paste0(data.root, "Collora/ADT/CD4T_cellIDs.csv"),
+  Collora = list(bamsort  = paste0(data.root, "Figure3/publicData/Collora/bamsort"),
+                 gate     = paste0(data.root, "Figure3/publicData/Collora/ADT/CD4T_cellIDs.csv"),
                  hiv_rule = "collora"),
-  HIVseq  = list(bamsort = paste0(data.root, "HIVseq/bamsort"),
-                 gate    = paste0(data.root, "HIVseq/ADT/CD4T_cellIDs.csv"),
+  HIVseq  = list(bamsort = paste0(data.root, "Figure3/publicData/HIVseq/bamsort"),
+                 gate    = paste0(data.root, "Figure3/publicData/HIVseq/ADT/CD4T_cellIDs.csv"),
                  hiv_rule = "reads"))
 
 # Collora library -> treatment. HIV-seq is read off the library name: week0 is
@@ -3297,8 +3297,9 @@ artcomp.dir <- data.root
 output.dir  <- paste0(plot.root, "Supplemental/SuppFig3/")
 dir.create(output.dir, recursive = TRUE, showWarnings = FALSE)
 
-artcomp_bamsort <- c(Collora = "Collora/bamsort", HIVseq = "HIVseq/bamsort",
-                     Giron = "Gironetal2024/bamsort")
+artcomp_bamsort <- c(Collora = "Figure3/publicData/Collora/bamsort",
+                     HIVseq  = "Figure3/publicData/HIVseq/bamsort",
+                     Giron   = "Figure3/publicData/Gironetal2024/bamsort")
 artcomp_labels <- c(`SIV D195` = "SIV D195\n(our ART sample)",
                     Collora    = "Collora 2022",
                     HIVseq     = "Frouard\n(HIV-specific capture)",

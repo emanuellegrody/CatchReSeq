@@ -1,0 +1,7 @@
+min_reads = 2
+min_region_count = 1
+min_umi = 3
+min_cells = 0
+min_reads_cell = 1
+mode = CaRe
+processed_date = 2026-10-29

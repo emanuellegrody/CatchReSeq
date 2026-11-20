@@ -33,7 +33,9 @@ echo "===== $(date '+%Y-%m-%d %H:%M:%S')  $(basename "$0") $*  (pid $$) ====="
 # Filesystem root for every input read and output written below. Override to run
 # the pipeline against a different copy of the data:
 #   DATA_ROOT=/my/data bash <this script>
-DATA_ROOT="${DATA_ROOT:-/projects/b1042/GoyalLab/egrody}"
+# Exported so the stepFour R scripts, which srun launches as their own process,
+# resolve the same root rather than falling back to their built-in default.
+export DATA_ROOT="${DATA_ROOT:-/projects/b1042/GoyalLab/egrody}"
 
 START_STEP="${1:-stepTwo}"
 case "$START_STEP" in
@@ -103,7 +105,8 @@ if [ "$START_N" -le 3 ]; then
 fi
 
 say "===== stepFour: detection thresholds ====="
-srun -A b1042 -p genomics -N 1 -n 1 --mem=32G -t 00:30:00 \
+srun -A "${SLURM_ACCOUNT:-b1042}" -p "${SLURM_PARTITION:-genomics}" \
+     -N 1 -n 1 --mem=32G -t 00:30:00 \
      bash -c "module purge; module load R/4.4.0; Rscript ${SCRIPT_DIR}/../../pipelineScripts/bamsort/stepFour_minimums_TenX.R" \
      || { say "stepFour failed"; exit 1; }
 say "stepFour finished"

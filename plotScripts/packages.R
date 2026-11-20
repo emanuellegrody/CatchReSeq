@@ -219,7 +219,8 @@ load_packages_with_versions <- function(packages, versions_file,
                                         attach = TRUE) {
 
   if (!requireNamespace("remotes", quietly = TRUE)) {
-    install.packages("remotes", quiet = TRUE)
+    install.packages("remotes", repos = "https://cloud.r-project.org",
+                     quiet = TRUE)
   }
 
   # Load existing versions file
@@ -451,7 +452,8 @@ load_packages_with_versions(optional_cran_packages, versions_file,
 # dependencies they need (e.g. dplyr for fgsea helpers) are already on disk.
 # None are attached here; every one of them belongs to an optional group.
 if (!requireNamespace("BiocManager", quietly = TRUE)) {
-  install.packages("BiocManager", quiet = TRUE)
+  install.packages("BiocManager", repos = "https://cloud.r-project.org",
+                   quiet = TRUE)
 }
 missing_bioc <- bioc_packages[!is_pkg_installed(bioc_packages)]
 install_in_subprocess(missing_bioc, label = "Bioconductor package(s)",

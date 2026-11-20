@@ -7,8 +7,10 @@
 #SBATCH --time=20:00:00
 #SBATCH --job-name=HIVseq_redl
 #SBATCH --array=1-16%6
-#SBATCH --output=/projects/b1042/GoyalLab/egrody/publicData/HIVseq/logs/redl_%A_%a.out
-#SBATCH --error=/projects/b1042/GoyalLab/egrody/publicData/HIVseq/logs/redl_%A_%a.err
+# Relative to the directory sbatch is run from; create it first with
+# `mkdir -p logs`, as sbatch will not create it and the job fails if it is absent.
+#SBATCH --output=logs/redownload_sra_%A_%a.out
+#SBATCH --error=logs/redownload_sra_%A_%a.err
 
 # Re-download 16 HIVseq TenX runs whose barcode read was dropped by the first
 # attempt. Root cause: in these runs the 10X cell-barcode read (~30 bp) is

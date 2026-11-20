@@ -12,8 +12,12 @@ import os
 import sys
 from collections import defaultdict
 
-COUNTS_DIR = "/projects/b1042/GoyalLab/egrody/publicData/HIVseq/counts"
-MATRIX_DIR = "/projects/b1042/GoyalLab/egrody/publicData/HIVseq/matrices"
+# Roots come from the environment so one copy of this script serves any data
+# tree; the defaults keep it runnable by hand.
+PUBLIC_ROOT = os.environ.get("CARE_PUBLIC_ROOT",
+                             "/projects/b1042/GoyalLab/egrody/publicData")
+COUNTS_DIR = os.environ.get("COUNTS_DIR", os.path.join(PUBLIC_ROOT, "HIVseq", "counts"))
+MATRIX_DIR = os.environ.get("MATRIX_DIR", os.path.join(PUBLIC_ROOT, "HIVseq", "matrices"))
 
 
 def read_barcodes(path):

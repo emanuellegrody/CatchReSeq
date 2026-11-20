@@ -1,0 +1,6 @@
+sample,fastq,cell_count
+cDNA,GoyalLab_invitro_cDNA.fastq.gz,9700
+CIe_env,GoyalLab_invitro_CIe_env.fastq.gz,9700
+CIe_gag,GoyalLab_invitro_CIe_gag.fastq.gz,9700
+CIe_tat1,GoyalLab_invitro_CIe_tat1.fastq.gz,9700
+CIe_vif,GoyalLab_invitro_CIe_vif.fastq.gz,9700

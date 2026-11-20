@@ -1,0 +1,12 @@
+cff-version: 1.2.0
+message: "If you use this software, please cite both the software and the paper."
+title: "Catch*ReSeq"
+abstract: >-
+  Targeted capture and re-sequencing of viral transcripts from single-cell
+  libraries, with the analysis and figure code for Grody et al., 2026.
+type: software
+authors:
+  - family-names: Grody
+    given-names: Emanuelle
+repository-code: "https://github.com/emanuellegrody/CatchReSeq"
+license: MIT

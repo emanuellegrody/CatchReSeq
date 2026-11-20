@@ -11,6 +11,9 @@
 
 set -euo pipefail
 
+# Resolved from this script's own location so the repo can be cloned anywhere.
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
 ### UPDATE PATHS
 # Filesystem root for every input read and output written below. Override to
 # run this against a different copy of the data:
@@ -21,12 +24,14 @@ GENOME_ROOT="${GENOME_ROOT:-/projects/b1042/GoyalLab/egrody/genomes}"
 export TenX_FASTQ_DIR="${DATA_ROOT}/rawData/EGS026/fastq_concat/tenx"
 export FB_FASTQ_SRC_DIR="${DATA_ROOT}/publicData/Gironetal2024/fastq"
 export TRANSCRIPTOME="${GENOME_ROOT}/GRCh38_HXB2"
-export FEATURE_REF="${DATA_ROOT}/publicData/Gironetal2024/feature_ref/feature_reference.csv"
+# The feature reference (ADT and hashtag barcodes) is ours and ships with the
+# repository, so it resolves from this script's own location rather than from
+# the data root. Override FEATURE_REF to use a different panel.
+export FEATURE_REF="${FEATURE_REF:-${SCRIPT_DIR}/../../pipelineScripts/cellranger/feature_reference.csv}"
 export OUTPUT_PATH="${DATA_ROOT}/extractedData/Figure3/singleCell/counts"
 export OUTS_ONLY="FALSE"
 
 ### DO NOT UPDATE BELOW
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 MANIFEST="${SCRIPT_DIR}/samples_manifest.csv"
 WORKER="${SCRIPT_DIR}/../../pipelineScripts/cellranger/featurebarcode_cellranger_worker.sh"
 

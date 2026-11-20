@@ -302,7 +302,7 @@ REDUCTION_DIMENSIONS <- 30
 # QC thresholds are arguments so a dataset can be filtered on the thresholds its
 # own source published; the upper caps accept Inf to drop them entirely.
 SeuratPipeline <- function(file_location, sample_name,
-                           output_dir = "/projects/b1042/GoyalLab/egrody/extractedData/",
+                           output_dir = data.root,
                            plots = FALSE, rds = TRUE, species = "macaque", remove_mac = TRUE,
                            min_features = 200, max_features = 3500,
                            max_counts = 20000, max_mito = 5) {
@@ -554,7 +554,7 @@ correlation_plots <- function(care_data, single_cell_data, join = "inner") {
 }
 ## compare host gene expression to viral expression
 host_virus_correlation <- function(joint_care_data, joint_rds, genes_list, viral_col,
-                                   output.dir = "/projects/b1042/GoyalLab/egrody/extractedData/EGS018/joint/hostVirus/", 
+                                   output.dir = paste0(data.root, "EGS018/joint/hostVirus/"),
                                    outputs = TRUE) {
   if (outputs && !dir.exists(output.dir)) {
     dir.create(output.dir, recursive = TRUE)
@@ -1188,7 +1188,7 @@ create_identity_umap <- function(data, col1 = NULL, col2 = NULL,
 }
 ## plot FM barcode on UMAP
 plotBarcodeUMAP <- function(data, title, min_count = 1, max_count = Inf,
-                            output_dir = "/projects/b1042/GoyalLab/egrody/extractedData/EGS024/",
+                            output_dir = paste0(data.root, "EGS024/"),
                             saveas = paste0("UMAP_", title, ".pdf")) {
   # Count cells per barcode, excluding "none"
   barcode_counts <- table(data$barcode)
@@ -1850,7 +1850,7 @@ analyze_cell_subset_unclustered <- function(seurat_obj,
   return(results)
 }
 ## visualize subset analysis results
-plot_subset_analysis <- function(seurat_obj, analysis_results, subset_cells, save = TRUE, output_dir = "/projects/b1042/GoyalLab/egrody/") {
+plot_subset_analysis <- function(seurat_obj, analysis_results, subset_cells, save = TRUE, output_dir = plot.root) {
   require(ggplot2)
   
   if (!is(seurat_obj, "Seurat")) {
@@ -3782,10 +3782,8 @@ marker_counts <- function(obj, genes) {
 #
 # A dataset with no list here is left ungated, handled by `missing` below.
 adt_cd4t_paths <- c(
-  HIVseq  = paste0("/projects/b1042/GoyalLab/egrody/extractedData/",
-                   "HIVseq/ADT/CD4T_cellIDs.csv"),
-  Collora = paste0("/projects/b1042/GoyalLab/egrody/extractedData/",
-                   "Collora/ADT/CD4T_cellIDs.csv"))
+  HIVseq  = paste0(data.root, "Figure3/publicData/HIVseq/ADT/CD4T_cellIDs.csv"),
+  Collora = paste0(data.root, "Figure3/publicData/Collora/ADT/CD4T_cellIDs.csv"))
 adt_cd4t_env <- new.env(parent = emptyenv())
 
 adt_cd4t_table <- function(paths = adt_cd4t_paths) {
@@ -4525,13 +4523,9 @@ read_migrated <- function(path, reader = read.csv, ...) {
 figure1_cellranger_runs <- data.frame(
   samples = c("D0", "D195", "D83", "Invitro", "Pacute", "W0", "W2"),
   runs = c(
-    "/projects/b1042/GoyalLab/egrody/extractedData/Figure1/singleCell/counts/Mmul_10_mac239/Mmul_10_mac239_LP29_D0",
-    "/projects/b1042/GoyalLab/egrody/extractedData/Figure1/singleCell/counts/Mmul_10_mac239/Mmul_10_mac239_LP29_D195",
-    "/projects/b1042/GoyalLab/egrody/extractedData/Figure1/singleCell/counts/Mmul_10_mac239/Mmul_10_mac239_LP29_D83",
-    "/projects/b1042/GoyalLab/egrody/extractedData/Figure1/singleCell/counts/Mmul_10_mac239/Mmul_10_mac239_invitro",
-    "/projects/b1042/GoyalLab/egrody/extractedData/Figure1/singleCell/counts/Mmul_10_mac239/Mmul_10_mac239_P_acute_combined",
-    "/projects/b1042/GoyalLab/egrody/extractedData/Figure1/singleCell/counts/Mmul_10_mac239/Mmul_10_mac239_W0",
-    "/projects/b1042/GoyalLab/egrody/extractedData/Figure1/singleCell/counts/Mmul_10_mac239/Mmul_10_mac239_W2"
+    paste0(data.root, "Figure1/singleCell/counts/Mmul_10_mac239/Mmul_10_mac239_",
+           c("LP29_D0", "LP29_D195", "LP29_D83", "invitro",
+             "P_acute_combined", "W0", "W2"))
   ),
   stringsAsFactors = FALSE
 )
@@ -4545,7 +4539,7 @@ figure1_cellranger_runs <- data.frame(
 ## multiple GB per sample and the bamsort pipeline reads them from the original
 ## runs, so they are left in place. Pass contents = NULL to copy all of outs/.
 collect_cellranger_outs <- function(runs = figure1_cellranger_runs,
-                                    counts.dir = "/projects/b1042/GoyalLab/egrody/extractedData/Figure1/singleCell/counts/",
+                                    counts.dir = paste0(data.root, "Figure1/singleCell/counts/"),
                                     contents = c("raw_feature_bc_matrix",
                                                  "filtered_feature_bc_matrix"),
                                     overwrite = FALSE) {

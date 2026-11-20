@@ -34,7 +34,8 @@ def find_matching_dirs(gene, condition, counts_dir):
         if condition == "KO" and "_KO_" not in dirname:
             continue
         # Match gene: directory name ends with the gene name or gene name
-        # is a prefix of the suffix (e.g., "Slk" matches "Slkv3", "Slkv4")
+        # is a prefix of the suffix, so the probe name "Slk" selects the
+        # versioned run directory "Slkv4"
         suffix = dirname.split("_")[-1]
         if suffix.startswith(gene):
             matches.append(dirname)

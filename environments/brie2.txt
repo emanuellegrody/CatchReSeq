@@ -1,0 +1,11 @@
+# python 3.11.14
+# Cassette-exon isoform ratios (BRIE2).
+# Activated as `source activate brie2` by isoform/brie2_worker.sh.
+brie==2.3.0
+pysam==0.23.3
+numpy==2.4.2
+pandas==2.3.3
+scipy==1.17.1
+scanpy==1.11.5
+anndata==0.12.10
+matplotlib==3.10.8

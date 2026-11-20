@@ -29,7 +29,6 @@ suppressPackageStartupMessages({
   library(data.table)
   library(dplyr)
   library(tidyr)
-  library(Seurat)
 })
 
 # ========== ENV VAR HELPERS ===================================================
@@ -109,7 +108,16 @@ for (i in seq_along(raw_cellIDs_samples_vec)) {
                           "/outs/raw_feature_bc_matrix/")
 
   tryCatch({
-    rawdata <- Read10X(rawDataFolder)
+    # Seurat is attached here rather than at the top of the file: it is
+    # needed only to read a cellranger matrix, and a sample whose
+    # raw_cellIDs are already cached never reaches this branch. Deferring
+    # it keeps such a run to data.table, dplyr and tidyr.
+    if (!requireNamespace("Seurat", quietly = TRUE)) {
+      stop("Seurat is required to read ", rawDataFolder,
+           ". Install it, or supply a precomputed ",
+           basename(sample_file), ".")
+    }
+    rawdata <- Seurat::Read10X(rawDataFolder)
     # Feature-barcode runs (Gene Expression + Antibody Capture/hashtags) come
     # back as a list of matrices, one per library type. Cells are called on the
     # transcriptome, so take that matrix; plain TenX runs return it directly.

@@ -55,17 +55,24 @@ RENAMES = [
     ("PID1052week0replicate6Primer",  "PID1052week70replicate6Primer"),
 ]
 
+# Roots come from the environment, the same two variables plotScripts/config.R
+# reads, so one copy of this script serves any data tree.
+DATA_ROOT = os.environ.get("CARE_DATA_ROOT",
+                           "/projects/b1042/GoyalLab/egrody/extractedData").rstrip("/")
+PUBLIC_ROOT = os.environ.get("CARE_PUBLIC_ROOT",
+                             "/projects/b1042/GoyalLab/egrody/publicData").rstrip("/")
+
 # Directories whose entry names embed a sample name. publicData/HIVseq/matrices
 # is deliberately absent: those are the published files and already correct.
 TARGET_DIRS = [
-    "/projects/b1042/GoyalLab/egrody/publicData/HIVseq/counts",
-    "/projects/b1042/GoyalLab/egrody/extractedData/HIVseq/counts",
-    "/projects/b1042/GoyalLab/egrody/extractedData/HIVseq/bamsort",
-    "/projects/b1042/GoyalLab/egrody/extractedData/HIVseq/bamsort/splice",
-    "/projects/b1042/GoyalLab/egrody/extractedData/HIVseq/hiv",
-    "/projects/b1042/GoyalLab/egrody/extractedData/HIVseq/cladeB_comparison",
-    "/projects/b1042/GoyalLab/egrody/extractedData/HIVseq/Seurat/RDS",
-    "/projects/b1042/GoyalLab/egrody/extractedData/HIVseq/Seurat/RDS_publishedQC",
+    f"{PUBLIC_ROOT}/HIVseq/counts",
+    f"{DATA_ROOT}/Figure3/publicData/HIVseq/counts",
+    f"{DATA_ROOT}/Figure3/publicData/HIVseq/bamsort",
+    f"{DATA_ROOT}/Figure3/publicData/HIVseq/bamsort/splice",
+    f"{DATA_ROOT}/Figure3/publicData/HIVseq/hiv",
+    f"{DATA_ROOT}/Figure3/publicData/HIVseq/cladeB_comparison",
+    f"{DATA_ROOT}/Figure3/publicData/HIVseq/Seurat/RDS",
+    f"{DATA_ROOT}/Figure3/publicData/HIVseq/Seurat/RDS_publishedQC",
 ]
 
 # This script lives in extractionScripts/pipelineScripts/, so the repo root is
@@ -81,17 +88,17 @@ REPO_ROOT = Path(__file__).resolve().parents[3]
 # derived from the corrected name rather than substituted into. The manifests'
 # ORIGINAL_GEO_SAMPLE is deliberately absent: it records GEO's own name.
 TARGET_CSVS = [
-    ("/projects/b1042/GoyalLab/egrody/extractedData/HIVseq/bamsort/"
+    (f"{DATA_ROOT}/Figure3/publicData/HIVseq/bamsort/"
      "all_samples_alignment_summary.csv", ["sample"], None),
-    ("/projects/b1042/GoyalLab/egrody/extractedData/HIVseq/cladeB_comparison/"
+    (f"{DATA_ROOT}/Figure3/publicData/HIVseq/cladeB_comparison/"
      "comparison_summary.csv", ["sample"], None),
-    ("/projects/b1042/GoyalLab/egrody/publicData/HIVseq/scripts/"
+    (f"{PUBLIC_ROOT}/HIVseq/scripts/"
      "HIVseq_manifest.csv", ["SAMPLE"], None),
     (str(REPO_ROOT / "extractionScripts" / "submissionScripts" /
          "PublicData" / "HIVseq" / "samples_manifest.csv"), ["SAMPLE"], None),
-    ("/projects/b1042/GoyalLab/egrody/extractedData/HIVseq/ADT/"
+    (f"{DATA_ROOT}/Figure3/publicData/HIVseq/ADT/"
      "CD4T_cellIDs.csv", ["sample", "cellID"], "week"),
-    ("/projects/b1042/GoyalLab/egrody/extractedData/HIVseq/ADT/"
+    (f"{DATA_ROOT}/Figure3/publicData/HIVseq/ADT/"
      "CD4T_gate_summary.csv", ["sample"], "week"),
 ]
 

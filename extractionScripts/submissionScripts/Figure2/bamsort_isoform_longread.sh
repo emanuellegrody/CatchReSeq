@@ -59,8 +59,10 @@ for SAMPLE_NAME in "${SAMPLES[@]}"; do
     echo "Output CSV: $OUTPUT_CSV"
     
     # The donor/acceptor coordinates in bamsort_isoform_longread.py are written
-    # in the 9602bp mac239.fa used everywhere else in this project. This BAM was
-    # aligned by nf-core against a 10279bp mac239, whose coordinates run 553bp
+    # in the 9602bp mac239.fa used everywhere else in this project, which drops
+    # the 5' LTR U3 and the 3' U5 so short reads cannot multimap between the two
+    # LTRs -- a problem long reads do not have, so this BAM was aligned by
+    # nf-core against the full-length 10279bp mac239, whose coordinates run 553bp
     # higher (measured from junction-spanning reads: the dominant gap at
     # 6597-8802 is canonical D4/6043-A7/8249). Without the offset the D4-A7
     # region test fails and multiply-spliced molecules are called "any".

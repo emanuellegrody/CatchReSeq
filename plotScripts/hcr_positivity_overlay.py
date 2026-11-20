@@ -30,8 +30,14 @@ from skimage.segmentation import find_boundaries
 from skimage.morphology import binary_dilation, disk
 
 
-DEFAULT_RAW_DIR = "/projects/b1042/GoyalLab/egrody/rawData"
-DEFAULT_TABLE_DIR = "/projects/b1042/GoyalLab/egrody/extractedData/Figure2/bigFISH"
+# Roots come from the environment, the same variables plotScripts/config.R
+# reads, so one copy of this script serves any data tree. Both stay
+# overridable per run by the command-line flags below.
+DEFAULT_RAW_DIR = os.environ.get("CARE_RAW_ROOT",
+                                 "/projects/b1042/GoyalLab/egrody/rawData")
+DEFAULT_TABLE_DIR = os.path.join(
+    os.environ.get("CARE_DATA_ROOT", "/projects/b1042/GoyalLab/egrody/extractedData"),
+    "Figure2", "bigFISH")
 ARM_OF_SAMPLE = {"EGS023": "manual_batchthr", "EGS027": "manual_replicate2_batchthr"}
 
 COLOR_POSITIVE = "#2ECC40"

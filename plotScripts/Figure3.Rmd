@@ -2559,28 +2559,28 @@ options(future.globals.maxSize = 8 * 1024^3)  # 8 GiB
 public_datasets <- list(
   Collora = list(
     results    = "collora_res",
-    deg.dir    = paste0(data.root, "Collora/DEG/"),
+    deg.dir    = paste0(data.root, "Figure3/publicData/Collora/DEG/"),
     conditions = c("Viremic", "ART", "Uninfected")),
   HIVseq = list(
     results    = "hivseq_res",
-    deg.dir    = paste0(data.root, "HIVseq/DEG/"),
+    deg.dir    = paste0(data.root, "Figure3/publicData/HIVseq/DEG/"),
     conditions = c("Viremic", "ART"))
 )
 
 public_paths <- list(
   Collora = list(
     counts     = paste0(public.root, "Colloraetal2022/counts"),
-    bamsort    = paste0(data.root, "Collora/bamsort"),
-    rds        = paste0(data.root, "Collora/Seurat/RDS_publishedQC"),
-    integrated = paste0(data.root, "Collora/Seurat/integrated_publishedQC"),
+    bamsort    = paste0(data.root, "Figure3/publicData/Collora/bamsort"),
+    rds        = paste0(data.root, "Figure3/publicData/Collora/Seurat/RDS_publishedQC"),
+    integrated = paste0(data.root, "Figure3/publicData/Collora/Seurat/integrated_publishedQC"),
     qc         = list(min_features = 500, max_features = Inf,
                       max_counts = Inf, max_mito = 10),
     hiv_rule   = "collora"),
   HIVseq = list(
     counts     = paste0(public.root, "HIVseq/counts"),
-    bamsort    = paste0(data.root, "HIVseq/bamsort"),
-    rds        = paste0(data.root, "HIVseq/Seurat/RDS_publishedQC"),
-    integrated = paste0(data.root, "HIVseq/Seurat/integrated_publishedQC"),
+    bamsort    = paste0(data.root, "Figure3/publicData/HIVseq/bamsort"),
+    rds        = paste0(data.root, "Figure3/publicData/HIVseq/Seurat/RDS_publishedQC"),
+    integrated = paste0(data.root, "Figure3/publicData/HIVseq/Seurat/integrated_publishedQC"),
     qc         = list(min_features = 500, max_features = Inf,
                       max_counts = Inf, max_mito = 15))
 )
@@ -2696,8 +2696,10 @@ Prerequisites: the #All SIV `tier_tables`, `tier_deg` and `pathway_scores`,
 and #Public Data `public_deg`.
 ```{r tier_pathways, warning=FALSE}
 tier_public_files <- c(
-  Sys.glob(paste0(data.root, "Collora/DEG/Viremic_*_DEG_infected.csv")),
-  Sys.glob(paste0(data.root, "HIVseq/DEG/Viremic_*_DEG_infected.csv")))
+  Sys.glob(paste0(data.root,
+                  "Figure3/publicData/Collora/DEG/Viremic_*_DEG_infected.csv")),
+  Sys.glob(paste0(data.root,
+                  "Figure3/publicData/HIVseq/DEG/Viremic_*_DEG_infected.csv")))
 tier_public_min_tables <- 2
 tier_pathway_contrasts <- c("GEX_vs_neg", "Both_vs_neg", "CaReOnly_vs_neg",
                             "CaReOnly_vs_GEX", "Union_vs_neg", "GEX_naive")
@@ -3162,8 +3164,10 @@ art_hallmark_sets <- c("OXIDATIVE_PHOSPHORYLATION", "GLYCOLYSIS", "MTORC1_SIGNAL
                        "INTERFERON_GAMMA_RESPONSE", "INTERFERON_ALPHA_RESPONSE",
                        "TNFA_SIGNALING_VIA_NFKB", "INFLAMMATORY_RESPONSE")
 art_public_files <- c(
-  Sys.glob(paste0(data.root, "Collora/DEG/Viremic_*_DEG_infected.csv")),
-  Sys.glob(paste0(data.root, "HIVseq/DEG/Viremic_*_DEG_infected.csv")))
+  Sys.glob(paste0(data.root,
+                  "Figure3/publicData/Collora/DEG/Viremic_*_DEG_infected.csv")),
+  Sys.glob(paste0(data.root,
+                  "Figure3/publicData/HIVseq/DEG/Viremic_*_DEG_infected.csv")))
 art_gene_sets <- c(cd4t_subset_markers,
                    hallmark_gene_sets()[art_hallmark_sets],
                    public_hiv_signature(art_public_files, fc = 0.5, pval = 0.01,

@@ -1,0 +1,13 @@
+# python 3.6.15
+# smFISH spot detection and cell segmentation.
+# Activated as `source activate bigfish_env` by Figure2/bigfish_*.sh.
+# Pinned to python 3.6 by big-fish 0.6.2; this stack is deliberately separate
+# from the others, whose numpy and scikit-image versions it cannot coexist with.
+big-fish==0.6.2
+numpy==1.19.5
+pandas==1.1.5
+scipy==1.5.4
+scikit-image==0.17.2
+scikit-learn==0.24.2
+tifffile==2020.9.3
+matplotlib==3.3.4

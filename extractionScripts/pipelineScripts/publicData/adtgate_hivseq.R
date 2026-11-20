@@ -13,9 +13,13 @@
 # Nothing downstream should use a library whose flag is FALSE.
 suppressMessages({library(Seurat); library(dplyr); library(purrr)})
 
-matrices  <- "/projects/b1042/GoyalLab/egrody/publicData/HIVseq/matrices"
-counts    <- "/projects/b1042/GoyalLab/egrody/publicData/HIVseq/counts"
-output.dir <- "/projects/b1042/GoyalLab/egrody/extractedData/HIVseq/ADT/"
+# Roots come from the environment, the same two variables plotScripts/config.R
+# reads, so one copy of this script serves any data tree.
+public.root <- Sys.getenv("CARE_PUBLIC_ROOT", "/projects/b1042/GoyalLab/egrody/publicData/")
+data.root   <- Sys.getenv("CARE_DATA_ROOT",   "/projects/b1042/GoyalLab/egrody/extractedData/")
+matrices  <- file.path(public.root, "HIVseq/matrices")
+counts    <- file.path(public.root, "HIVseq/counts")
+output.dir <- file.path(data.root, "Figure3/publicData/HIVseq/ADT/")
 dir.create(output.dir, recursive = TRUE, showWarnings = FALSE)
 
 adt_depth_min <- 1000   # median ADT UMIs per cell required to trust the gate

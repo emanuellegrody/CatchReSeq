@@ -48,7 +48,17 @@ script_dir <- if (is.na(script_path)) getwd() else dirname(normalizePath(script_
 
 source(file.path(script_dir, "bamsort_functions.R"))
 
-care.root <- "/projects/b1042/GoyalLab/egrody/extractedData/Figure1/CaRe"
+# The data root comes from the environment so one copy of this script serves any
+# data tree. CARE_DATA_ROOT names the extractedData directory directly and is the
+# same variable plotScripts/config.R reads; DATA_ROOT names its parent and is what
+# the runAll.sh wrappers set; the literal keeps the script runnable by hand.
+care.root <- local({
+  extracted <- Sys.getenv("CARE_DATA_ROOT", unset = "")
+  base      <- Sys.getenv("DATA_ROOT", unset = "")
+  if (nzchar(extracted)) file.path(extracted, "Figure1", "CaRe")
+  else if (nzchar(base)) file.path(base, "extractedData", "Figure1", "CaRe")
+  else "/projects/b1042/GoyalLab/egrody/extractedData/Figure1/CaRe"
+})
 
 care.group <- c(D0 = "uninfected", W0 = "uninfected", D195 = "ART",
                 Invitro = "invitro", Pacute = "viremia", W2 = "viremia")

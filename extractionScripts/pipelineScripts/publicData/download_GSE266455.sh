@@ -5,8 +5,11 @@
 set -euo pipefail
 
 BASEURL="https://ftp.ncbi.nlm.nih.gov/geo/series/GSE266nnn/GSE266455/suppl"
-OUTDIR="/projects/b1042/GoyalLab/egrody/publicData/HIVseq/matrices"
-LOGDIR="/projects/b1042/GoyalLab/egrody/publicData/HIVseq/scripts/logs"
+# CARE_PUBLIC_ROOT is the same variable plotScripts/config.R and the other
+# publicData/ scripts read, so one setting serves all of them.
+CARE_PUBLIC_ROOT="${CARE_PUBLIC_ROOT:-/projects/b1042/GoyalLab/egrody/publicData}"
+OUTDIR="${OUTDIR:-${CARE_PUBLIC_ROOT}/HIVseq/matrices}"
+LOGDIR="${LOGDIR:-${CARE_PUBLIC_ROOT}/HIVseq/scripts/logs}"
 mkdir -p "$OUTDIR" "$LOGDIR"
 
 SAMPLES=(

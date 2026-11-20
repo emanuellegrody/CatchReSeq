@@ -79,8 +79,11 @@ export CNMF_N_WORKERS=4             # Parallel workers (must match array size)
 # =============================================================================
 # SLURM CONFIGURATION
 # =============================================================================
-ACCOUNT="b1042"
-PARTITION="genomics"
+# SLURM account and partition. These are the Northwestern Quest values; override
+# them for your own site:
+#   SLURM_ACCOUNT=myacct SLURM_PARTITION=mypart bash <this script>
+ACCOUNT="${SLURM_ACCOUNT:-b1042}"
+PARTITION="${SLURM_PARTITION:-genomics}"
 SCRIPT_DIR="${PIPELINE_DIR}/cnmf"
 LOG_DIR="${WRAPPER_DIR}/logs"
 CONDA_ENV="jupyter"

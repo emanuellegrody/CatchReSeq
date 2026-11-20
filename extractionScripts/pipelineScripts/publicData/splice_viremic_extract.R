@@ -41,8 +41,10 @@ art_hallmark_sets <- c("OXIDATIVE_PHOSPHORYLATION", "GLYCOLYSIS", "MTORC1_SIGNAL
                        "INTERFERON_GAMMA_RESPONSE", "INTERFERON_ALPHA_RESPONSE",
                        "TNFA_SIGNALING_VIA_NFKB", "INFLAMMATORY_RESPONSE")
 public_files <- c(
-  Sys.glob(paste0(data.root, "Collora/DEG/Viremic_*_DEG_infected.csv")),
-  Sys.glob(paste0(data.root, "HIVseq/DEG/Viremic_*_DEG_infected.csv")))
+  Sys.glob(paste0(data.root,
+                  "Figure3/publicData/Collora/DEG/Viremic_*_DEG_infected.csv")),
+  Sys.glob(paste0(data.root,
+                  "Figure3/publicData/HIVseq/DEG/Viremic_*_DEG_infected.csv")))
 
 # The SIV splice+ signature: genes called splice+ in the Invitro Ca*Re contrast
 # (SuppFigs.Rmd DEG: splice+ vs splice-, p_val_adj < 0.01 and |avg_log2FC| > 0.5).

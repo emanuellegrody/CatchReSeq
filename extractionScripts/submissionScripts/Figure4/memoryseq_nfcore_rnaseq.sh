@@ -46,8 +46,11 @@ export FASTA="${GENOME_ROOT}/GRCh38/refdata-gex-GRCh38-2024-A/fasta/genome.fa"
 export WORK_DIR="${DATA_ROOT}/extractedData/LD002/nfcore_work"
 
 export NFCORE_VERSION="3.17.0"
-export SLURM_ACCOUNT="b1042"
-export SLURM_PARTITION="genomics"
+# SLURM account and partition. These are the Northwestern Quest values; override
+# them for your own site:
+#   SLURM_ACCOUNT=myacct SLURM_PARTITION=mypart bash <this script>
+export SLURM_ACCOUNT="${SLURM_ACCOUNT:-b1042}"
+export SLURM_PARTITION="${SLURM_PARTITION:-genomics}"
 
 [ -f "$WORKER" ] || { echo "Error: file not found: $WORKER"; exit 1; }
 [ -f "$SAMPLE_SHEET" ] || { echo "Error: file not found: $SAMPLE_SHEET"; exit 1; }

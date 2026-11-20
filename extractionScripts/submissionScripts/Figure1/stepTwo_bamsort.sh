@@ -38,7 +38,7 @@ if [ ! -f "$ALIGNMENT_SCRIPT" ]; then
     echo
     echo "It is withheld from the public release of this repository and is"
     echo "available on request. See PRIVATE_SCRIPTS.md for what it does, its"
-    echo "interface, and how to request access to it. Drop the file in"
+    echo "interface, and how to ask for it. Drop the file in"
     echo "extractionScripts/pipelineScripts/ and re-run; nothing else changes."
     exit 2
 fi

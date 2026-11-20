@@ -628,7 +628,8 @@ set_minimums <- function(mode, umi_file, min_reads = 1, min_region_count = 1,
 }
 ## CaRe and TenX: filter multiple samples
 process_all_set_minimums <- function(mode, sample_list, input_dir, save_output = TRUE, 
-                                       output_dir = "/projects/b1042/GoyalLab/egrody/extractedData/",
+                                       output_dir = Sys.getenv("CARE_DATA_ROOT",
+                                         "/projects/b1042/GoyalLab/egrody/extractedData/"),
                                        min_reads = 1, min_region_count = 1, min_umi = 1, 
                                        min_cells = 0, min_reads_cell = 1,
                                        save_valid_umi = TRUE, valid_umi_dir = NULL,

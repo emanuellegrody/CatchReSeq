@@ -35,13 +35,13 @@ export FUNCTIONS_R="${PIPELINE_DIR}/bamsort/bamsort_functions.R"
 #   DATA_ROOT=/my/data bash stepThree_process.sh
 DATA_ROOT="${DATA_ROOT:-/projects/b1042/GoyalLab/egrody}"
 
-export RAW_CELLIDS_OUTPUT_DIR="${DATA_ROOT}/extractedData/Collora/raw_cellIDs"
+export RAW_CELLIDS_OUTPUT_DIR="${DATA_ROOT}/extractedData/Figure3/publicData/Collora/raw_cellIDs"
 export GENOME_PREFIX="GRCh38_HXB2"
 export MIN_UMI_COUNT="100"
 # Parent dir of the cellranger runs, i.e. <folder>/<GENOME_PREFIX>_<sample>/outs/
 COUNTS_ROOT="${DATA_ROOT}/publicData/Colloraetal2022/counts/"
-export PROCESS_INPUT_DIRS="${DATA_ROOT}/extractedData/Collora/bamsort/"
-export PROCESS_OUTPUT_DIR="${DATA_ROOT}/extractedData/Collora/bamsort/reads/"
+export PROCESS_INPUT_DIRS="${DATA_ROOT}/extractedData/Figure3/publicData/Collora/bamsort/"
+export PROCESS_OUTPUT_DIR="${DATA_ROOT}/extractedData/Figure3/publicData/Collora/bamsort/reads/"
 # stepTwo_bamsort.sh extracts splice junctions but does not run the
 # bamsort_splice_sites.py filter, so there are no *_splicesites_filtered.csv to
 # apply. Set this once that filter is run for these samples.

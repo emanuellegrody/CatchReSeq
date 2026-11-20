@@ -7,8 +7,10 @@
 #SBATCH --time=8:00:00
 #SBATCH --job-name=HIVseq_sra
 #SBATCH --array=1-35%8
-#SBATCH --output=/projects/b1042/GoyalLab/egrody/publicData/HIVseq/logs/sra_%A_%a.out
-#SBATCH --error=/projects/b1042/GoyalLab/egrody/publicData/HIVseq/logs/sra_%A_%a.err
+# Relative to the directory sbatch is run from; create it first with
+# `mkdir -p logs`, as sbatch will not create it and the job fails if it is absent.
+#SBATCH --output=logs/download_sra_%A_%a.out
+#SBATCH --error=logs/download_sra_%A_%a.err
 
 # Download HIVseq public SRA accessions: prefetch -> fasterq-dump -> gzip.
 # One array task per accession (8 concurrent). Idempotent: skips an accession

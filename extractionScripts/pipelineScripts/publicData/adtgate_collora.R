@@ -38,9 +38,13 @@
 # subsetting to the barcodes our own cellranger run called.
 suppressMessages({library(Matrix); library(dplyr); library(purrr); library(tibble)})
 
-matrices   <- "/projects/b1042/GoyalLab/egrody/publicData/Colloraetal2022/processed/matrices"
-counts     <- "/projects/b1042/GoyalLab/egrody/publicData/Colloraetal2022/counts"
-output.dir <- "/projects/b1042/GoyalLab/egrody/extractedData/Collora/ADT/"
+# Roots come from the environment, the same two variables plotScripts/config.R
+# reads, so one copy of this script serves any data tree.
+public.root <- Sys.getenv("CARE_PUBLIC_ROOT", "/projects/b1042/GoyalLab/egrody/publicData/")
+data.root   <- Sys.getenv("CARE_DATA_ROOT",   "/projects/b1042/GoyalLab/egrody/extractedData/")
+matrices   <- file.path(public.root, "Colloraetal2022/processed/matrices")
+counts     <- file.path(public.root, "Colloraetal2022/counts")
+output.dir <- file.path(data.root, "Figure3/publicData/Collora/ADT/")
 dir.create(output.dir, recursive = TRUE, showWarnings = FALSE)
 
 isotypes      <- c("MouseIgG1", "MouseIgG2a", "MouseIgG2b")
