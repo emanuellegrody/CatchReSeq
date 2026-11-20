@@ -4,8 +4,7 @@ Scripts to reproduce every figure in the Catch\*ReSeq manuscript
 (DOI: [10.64898/2026.11.12.763766](https://doi.org/10.64898/2026.11.12.763766)).
 
 - **Demo:** [`demo/`](demo/) -- runs in about 5 seconds, no cluster needed.
-- **What is not included:** [two read-extraction scripts and one third-party
-  toolkit](PRIVATE_SCRIPTS.md).
+- **What is not included:** [two read-extraction scripts](PRIVATE_SCRIPTS.md) -- reanalysis of the deposited data does not require these scripts.
 - **License:** MIT, see [LICENSE](LICENSE).
 
 ---
