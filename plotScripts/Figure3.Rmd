@@ -3020,11 +3020,6 @@ giron_care_cols <- c("US", "US.SS", "SS.MS", "SS", "MS", "any", "total")
 # Detection thresholds. Set here rather than in the pipeline so they can be
 # varied without re-running stepThree.
 #
-# Read counts are distinct reads: stepTwo charges a read spanning two adjacent
-# junction windows to one of them (`primary_count`), so min_reads means what it
-# says. Under the old summed counts every D1-probe molecule was doubled and
-# min_reads = 5 was really 2.5.
-#
 # The two HIV-uninfected donors multiplexed into the pool are the internal
 # negative control, and the threshold is set to the point where they are empty.
 # At min_umi = 1 that point is min_reads = 4; 4, 5 and 6 all return the same
