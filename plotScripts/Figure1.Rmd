@@ -542,57 +542,42 @@ for (cfg in sample_config) {
 
 ### Seurat objects
 
-Prerequisites: the per-sample cellranger `filtered_feature_bc_matrix`
-directories -- the same EGS002 / EGS004 / EGS009 `Mmul_10_mac239` counts the
-TenX bamsort arm reads, listed in
-`submissionScripts/Figure1/stepTwo_bamsort_TenX.csv`. The TenX cellranger runs
-are upstream input, not produced by this pipeline.
+Prerequisites: the per-sample cellranger matrices under
+`Figure1/singleCell/counts/outs_<sample>/filtered_feature_bc_matrix/` -- the
+same EGS002 / EGS004 / EGS009 `Mmul_10_mac239` counts the TenX bamsort arm
+reads, listed in `submissionScripts/Figure1/stepTwo_bamsort_TenX.csv`. The TenX
+cellranger runs are upstream input, not produced by this pipeline; use
+`collect_cellranger_outs()` to put a set of cellranger run directories into the
+`outs_<sample>` layout every reader in this notebook expects.
 
 Writes the two things every later chunk in this notebook reads: the per-sample
 Seurat object (`SeuratPipeline(rds = TRUE)` saves it under
 `Seurat/RDS/<sample>.rds`) and the UMAP coordinate table with each cell's library
 size (`Seurat/UMAPcoords/<sample>UMAP_coords.csv`). Run this before `### joint`.
 
-D83 is sequenced in EGS016 but is not one of the six Figure1 samples, so it is
-not built here.
+D13 is built here because Figure 2's Panel F reads its coordinate table; it is
+not one of the six Figure 1 samples and no Figure 1 panel uses it. D83 is
+sequenced in EGS016 and is used by neither figure, so it is not built.
 
 ```{r}
-samples <- data.frame(
-  datasets = c(
-    "LP29_D0",
-    "LP29_D195",
-    "invitro",
-    "P_acute_combined",
-    "W0",
-    "W2"
-  ),
-  samples = c(
-    "D0",
-    "D195",
-    "Invitro",
-    "Pacute",
-    "W0",
-    "W2"
-  ),
-  folders = paste0(data.root, c(
-    "Figure1/singleCell/counts/Mmul_10_mac239/",
-    "Figure1/singleCell/counts/Mmul_10_mac239/",
-    "Figure1/singleCell/counts/Mmul_10_mac239/",
-    "Figure1/singleCell/counts/Mmul_10_mac239/",
-    "Figure1/singleCell/counts/Mmul_10_mac239/",
-    "Figure1/singleCell/counts/Mmul_10_mac239/"
-  ))
+counts.dir <- paste0(data.root, "Figure1/singleCell/counts/")
+
+samples <- c(
+  "D0",
+  "D13",
+  "D195",
+  "Invitro",
+  "Pacute",
+  "W0",
+  "W2"
 )
 
 seurat.dir <- paste0(data.root, "Figure1/singleCell/Seurat/")
 output.dir <- paste0(seurat.dir, "UMAPcoords/")
 dir.create(output.dir, recursive = TRUE, showWarnings = FALSE)
 
-for (i in 1:nrow(samples)) {
-  sample_name <- samples$samples[i]
-  dataset <- samples$datasets[i]
-  folder <- samples$folders[i]
-  input.dir <- paste0(folder, "Mmul_10_mac239_", dataset, "/outs/filtered_feature_bc_matrix/")
+for (sample_name in samples) {
+  input.dir <- paste0(counts.dir, "outs_", sample_name, "/filtered_feature_bc_matrix/")
 
   tryCatch({
     seurat_obj <- SeuratPipeline(input.dir, sample_name,
@@ -1163,7 +1148,7 @@ Prerequisites: the SIV `### joint` chunk above, and the cellranger counts under
 How much of each 10X gene-expression library is virus rather than host, in UMIs.
 Two cell sets are reported because the figure's own tables are filtered further
 than cellranger's: the cellranger called cells, read from
-`Figure1/singleCell/counts/outs_<sample>/filtered_feature_bc_matrix.h5`, and
+`Figure1/singleCell/counts/outs_<sample>/filtered_feature_bc_matrix/`, and
 the Seurat-filtered cells the rest of Figure 1 uses, from
 `Figure1/joint/dataframes/<sample>_all.csv` (`size` is `nCount_RNA`, so it
 counts the viral feature too). A sample missing either file still gets the
@@ -1173,8 +1158,6 @@ from a different caller, stepThree_process's
 printed alongside.
 
 ```{r tenx_viral_umi_fraction}
-load_packages("genomics")   # rhdf5, for the cellranger matrix
-
 counts.dir <- paste0(data.root, "Figure1/singleCell/counts/")
 reads.dir  <- paste0(data.root, "Figure1/singleCell/bamsort/reads/")
 joint.dir  <- paste0(data.root, "Figure1/joint/dataframes/")
@@ -1187,21 +1170,20 @@ tenx_umi_samples <- c("D0", "W0", "Invitro", "Pacute", "W2", "D195")
 viral_feature_id <- "mac239"
 
 tenx_umis <- purrr::map_dfr(tenx_umi_samples, function(sample_name) {
-  h5 <- paste0(counts.dir, "outs_", sample_name, "/filtered_feature_bc_matrix.h5")
-  if (!file.exists(h5)) {
-    cat(sprintf("Skipping %s - no filtered matrix at %s\n", sample_name, h5))
+  mtx <- paste0(counts.dir, "outs_", sample_name, "/filtered_feature_bc_matrix/")
+  if (!file.exists(file.path(mtx, "matrix.mtx.gz"))) {
+    cat(sprintf("Skipping %s - no filtered matrix at %s\n", sample_name, mtx))
     return(NULL)
   }
-  # The matrix is read as its CSC parts rather than assembled: `indices` holds
-  # the 0-based feature row of every stored count, so one subset gives the viral
-  # row's UMIs and the full sum gives the library, without a dense matrix.
-  features <- rhdf5::h5read(h5, "matrix/features")
-  viral_row <- which(features$id == viral_feature_id)
+  # gene.column = 1 names the rows by feature id rather than by gene symbol, so
+  # the viral contig is matched on the id the reference declares. The matrix is
+  # sparse and both sums are taken on it directly, so no dense copy is built.
+  counts <- Read10X(mtx, gene.column = 1)
+  viral_row <- which(rownames(counts) == viral_feature_id)
   stopifnot(length(viral_row) == 1)
-  umi_counts  <- as.numeric(rhdf5::h5read(h5, "matrix/data"))
-  umi_feature <- as.integer(rhdf5::h5read(h5, "matrix/indices"))
-  cr_viral <- sum(umi_counts[umi_feature == viral_row - 1L])
-  cr_total <- sum(umi_counts)
+  cr_viral <- sum(counts[viral_row, ])
+  cr_total <- sum(counts)
+  cr_cells <- ncol(counts)
 
   # The same two quantities over the Seurat-filtered cells, which are the cells
   # every other Figure 1 number is computed on. GEX is log1p viral UMIs.
@@ -1219,7 +1201,7 @@ tenx_umis <- purrr::map_dfr(tenx_umi_samples, function(sample_name) {
     nrow(dplyr::distinct(read.csv(reads_file), cellID, UMI)) else NA_real_
 
   tibble(sample = sample_name,
-         cr_cells = length(rhdf5::h5read(h5, "matrix/barcodes")),
+         cr_cells = cr_cells,
          cr_viral = cr_viral, cr_host = cr_total - cr_viral, cr_total = cr_total,
          seurat_cells = seurat$cells, seurat_viral = seurat$viral,
          seurat_host  = seurat$total - seurat$viral, seurat_total = seurat$total,

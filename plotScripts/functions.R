@@ -1,11 +1,10 @@
 # functions.R  (plotScripts)
 # The analysis and plotting library the Figure*.Rmd and SuppFigs.Rmd notebooks
-# source. Holds the detection-threshold helpers (set_minimums), the CD4 T gate
-# (apply_cd4t_gate, cd4t_gate_table), the Seurat wrapper (SeuratPipeline) and
-# every plotting function the figures call.
+# source: detection thresholds, the CD4 T gate, the Seurat wrapper, and the
+# figures' plotting functions.
 #
-# Expects plotScripts/config.R to have been sourced first: data.root appears in
-# the default arguments below, and care.scripts.dir locates the pipeline library.
+# Source plotScripts/config.R first: data.root appears in the default arguments
+# below, and care.scripts.dir locates the pipeline library.
 
 # =============================================================================
 # CaRe and TenX
@@ -62,12 +61,10 @@ resolve_multimap_gs <- function(df) {
       stop("No 'category' or 'category.x'/'category.y' columns found in input.")
     }
   }
-  # Each category names the set of isoforms a read is consistent with, so two
-  # calls on one molecule resolve by intersecting those sets: SS-MS is {SS, MS}
-  # and US-SS is {US, SS}, so together they mean SS. An empty intersection is a
-  # real disagreement, and there a category naming a single isoform (US/SS/MS)
-  # takes precedence; if that does not settle it the call falls back to "any".
-  # Banded SS-MS calls collapse first, so SS-MS4 against SS-MS7 is agreement.
+  # A category names the isoform set a read is consistent with, so two calls on
+  # one molecule resolve by intersection: SS-MS {SS,MS} with US-SS {US,SS} means
+  # SS. On an empty intersection a single-isoform category (US/SS/MS) wins; if
+  # that does not settle it, the call falls back to "any".
   priority_cats <- c("US", "SS", "MS")
   cat_isoforms  <- list("US" = "US", "SS" = "SS", "MS" = "MS",
                         "SS-MS" = c("SS", "MS"), "US-SS" = c("US", "SS"),
@@ -99,8 +96,6 @@ resolve_multimap_gs <- function(df) {
   for (i in seq_len(nrow(df))) {
     cat_x <- df$category.x[i]
     cat_y <- df$category.y[i]
-    # read_x <- ifelse(is.na(df$read_count.x[i]), 0, df$read_count.x[i])
-    # read_y <- ifelse(is.na(df$read_count.y[i]), 0, df$read_count.y[i])
     
     # Case 1: Both categories are NA - skip this row
     if (is.na(cat_x) && is.na(cat_y)) {
@@ -223,19 +218,16 @@ resolve_multimap_gs <- function(df) {
       sprintf("(%.1f%%)", ifelse(stats$total > 0, stats$resolved_to_any/stats$total*100, 0)), "\n")
   cat("UMIs with no conflict (one or both categories NA):", stats$no_conflict, "\n")
   
-  
   return(result)
 }
 
 # =============================================================================
 # polyA internal vs terminal priming
 # =============================================================================
-## A parameter set that leaves most reads unassigned to any priming site
-## measures only the assignable minority, so internal:terminal statements are
-## restricted to sets where at least half the reads are assigned. The sweep
-## CSVs written by the bam_polya_*.py scripts keep every set, and the stacked
-## bar panels show the unassigned fraction as its own category; this cap applies
-## to the ratio statements drawn from those sweeps.
+## Internal:terminal ratios are restricted to parameter sets that assign at
+## least half the reads; below that the ratio describes only the assignable
+## minority. The bam_polya_*.py sweep CSVs keep every set and the stacked bar
+## panels show the unassigned fraction, so the cap applies to ratio statements.
 MAX_UNASSIGNED_FRAC <- 0.5
 
 assignable_sets <- function(df,
@@ -262,11 +254,7 @@ assignable_sets <- function(df,
   df[keep, , drop = FALSE]
 }
 
-## The panels show every parameter set tested; the ones the cap excludes from
-## the ratio statements are named with a strikethrough, so a reader can see both
-## the whole sweep and which part of it the statements rest on. The strike is a
-## combining overlay character, which the base pdf() device cannot encode, so
-## panels using these labels are written with device = cairo_pdf.
+## Strikes out the parameter sets the unassigned cap excludes.
 strike_text <- function(x) {
   vapply(x, function(s) paste0(strsplit(s, "")[[1]], "\u0336", collapse = ""),
          character(1), USE.NAMES = FALSE)
@@ -291,33 +279,24 @@ cap_struck_labels <- function(df,
 # =============================================================================
 # Seurat
 # =============================================================================
-# Number of leading dimensions of a linear reduction (PCA, or harmony for
-# integrated objects) used everywhere downstream: neighbor graphs, clustering,
-# UMAP, and every distance / kNN analysis built on an embedding. RunPCA still
-# computes its default 50 components, but analyses take only these leading ones,
-# so a distance in one figure means the same thing as a distance in another.
+# Leading dimensions of a linear reduction (PCA, or harmony when integrated).
 REDUCTION_DIMENSIONS <- 30
 
-## standard processing of counts matrices with Seurat
-# QC thresholds are arguments so a dataset can be filtered on the thresholds its
-# own source published; the upper caps accept Inf to drop them entirely.
+## Standard processing of a counts matrix with Seurat. QC thresholds are
+## arguments so a dataset can take the thresholds its own source published; the
+## upper caps accept Inf to drop them.
 SeuratPipeline <- function(file_location, sample_name,
                            output_dir = data.root,
                            plots = FALSE, rds = TRUE, species = "macaque", remove_mac = TRUE,
                            min_features = 200, max_features = 3500,
                            max_counts = 20000, max_mito = 5) {
-  # scCustomize and the SingleCellExperiment/zellkonverter pair are optional
-  # groups in packages.R, so they are attached here rather than at startup.
-  # load_packages() installs if needed and attaches quietly; bare require()
-  # announced each package and its whole Depends chain into the chunk output.
+  # loading optional packages
   load_packages("scCustomize", "SingleCellExperiment", "zellkonverter")
 
   plots_dir <- file.path(output_dir, "plots/")
   rds_dir <- file.path(output_dir, "RDS/")
   sapply(c(plots_dir, rds_dir), dir.create, recursive = TRUE, showWarnings = FALSE)
-  # Reading in feature matrices. file_location is either a cellranger matrix
-  # directory or an already-loaded counts matrix (used when the matrix has to be
-  # split by feature type first, e.g. Gene Expression vs Antibody Capture).
+  # Reading in feature matrices
   data <- if (is.character(file_location)) Read10X(data.dir = file_location) else file_location
   # Initialize the Seurat object with the raw (non-normalized data)
   sample <- CreateSeuratObject(counts = data, project = sample_name, min.cells = 3,
@@ -330,7 +309,6 @@ SeuratPipeline <- function(file_location, sample_name,
     ggsave(vplot, file = paste0(plots_dir, sample_name, "_preQC_violinplot.svg"),
            width = 7, height = 7)
   }
-  # Written as a logical rather than subset(subset = ) so an Inf cap is a no-op.
   keep <- sample$nFeature_RNA > min_features &
           sample$nFeature_RNA < max_features &
           sample$nCount_RNA   < max_counts &
@@ -356,7 +334,7 @@ SeuratPipeline <- function(file_location, sample_name,
   }
   # Remove viral spike-in genes (mac239, HXB2) so the human/host transcriptome
   # alone drives QC, clustering, and integration; viral counts are joined
-  # separately (from bamsort) as metadata downstream.
+  # separately downstream.
   if (remove_mac == TRUE) {
     viral_genes <- intersect(c("mac239", "HXB2"), rownames(sample))
     if (length(viral_genes) > 0) {
@@ -403,330 +381,10 @@ SeuratPipeline <- function(file_location, sample_name,
 }
 
 # =============================================================================
-# Joint Analyses
-# =============================================================================
-## joining and printing numbers
-read_sample_files <- function(samples, directory, filtered = TRUE) {
-  # Create an empty list to store data frames
-  data_list <- list()
-  
-  all_data <- NULL
-  
-  for (sample in samples) {
-    if (filtered) {
-      # Define file types to look for when filtered = TRUE
-      file_types <- c("CaRe", "GEX", "KLRB1")
-      
-      for (file_type in file_types) {
-        file_path <- file.path(directory, paste0(sample, "_", file_type, "_filtered.csv"))
-        
-        # Check if file exists
-        if (file.exists(file_path)) {
-          # Read the file
-          tryCatch({
-            sample_data <- read.csv(file_path)
-            
-            sample_data$sample <- sample
-            
-            if (is.null(all_data)) {
-              all_data <- sample_data
-            } else {
-              # Get common columns
-              common_cols <- intersect(colnames(all_data), colnames(sample_data))
-              all_data <- rbind(all_data[, common_cols], sample_data[, common_cols])
-            }
-            
-            cat(sprintf("Successfully read %s\n", paste0(sample, "_", file_type, "_filtered.csv")))
-          }, error = function(e) {
-            cat(sprintf("Error reading %s: %s\n", file_path, conditionMessage(e)))
-          })
-        }
-      }
-    } else {
-      # When filtered = FALSE, only look for one file type per sample
-      file_path <- file.path(directory, paste0(sample, "_UMI_read_counts_full.csv"))
-      
-      # Check if file exists
-      if (file.exists(file_path)) {
-        # Read the file
-        tryCatch({
-          sample_data <- read.csv(file_path)
-          
-          sample_data$sample <- sample
-          
-          if (is.null(all_data)) {
-            all_data <- sample_data
-          } else {
-            # Get common columns
-            common_cols <- intersect(colnames(all_data), colnames(sample_data))
-            all_data <- rbind(all_data[, common_cols], sample_data[, common_cols])
-          }
-          
-          cat(sprintf("Successfully read %s\n", paste0(sample, "_UMI_read_counts_full.csv")))
-        }, error = function(e) {
-          cat(sprintf("Error reading %s: %s\n", file_path, conditionMessage(e)))
-        })
-      }
-    }
-  }
-  
-  if (!is.null(all_data)) {
-    cat("Total cells loaded:", nrow(all_data), "\n")
-    return(all_data)
-  } else {
-    warning("No data was loaded for any of the provided samples")
-    return(NULL)
-  }
-}
-## correlation analysis with plots of relationship between CaRe and SingleCell data
-correlation_plots <- function(care_data, single_cell_data, join = "inner") {
-  if ("VISERcount" %in% colnames(care_data)) {
-    care_data <- rename(care_data, CaRecount = VISERcount)
-  }
-  required_columns <- list(
-    care_data = c("CaRecount", "cellID"),
-    single_cell_data = c("SingleCellcount", "cellID")
-  )
-  
-  lapply(names(required_columns), function(dataset) {
-    missing_cols <- required_columns[[dataset]][!required_columns[[dataset]] %in% colnames(get(dataset))]
-    if (length(missing_cols) > 0) {
-      stop(sprintf("Missing required columns in %s: %s", dataset, paste(missing_cols, collapse = ", ")))
-    }
-  })
-  
-  join_func <- switch(join,
-                      "inner" = inner_join,
-                      "left" = left_join,
-                      "right" = right_join,
-                      "full" = full_join,
-                      inner_join
-  )
-
-  jointTable <- join_func(care_data, single_cell_data, by = "cellID") %>%
-    select(-contains("UMAP")) %>%
-    mutate(
-      log1pCaReCount = log1p(CaRecount),
-      log2CaReCount = log2(CaRecount),
-      log1pSingleCell = log1p(SingleCellcount),
-    )
-  
-  cat(
-    "Correlation between 10X data and log1p CaRe data:\n",
-    "  Pearson: ", round(cor(jointTable$log1pSingleCell, jointTable$log1pCaReCount, method="pearson"), 3),
-    "\n  Spearman: ", round(cor(jointTable$log1pSingleCell, jointTable$log1pCaReCount, method="spearman"), 3),
-    
-    "\n\nCorrelation between 10X data and log2 CaRe data:\n",
-    "  Pearson: ", round(cor(jointTable$log1pSingleCell, jointTable$log2CaReCount, method="pearson"), 3),
-    "\n  Spearman: ", round(cor(jointTable$log1pSingleCell, jointTable$log2CaReCount, method="spearman"), 3), 
-    
-    "\n\nCorrelation between 10X counts and log2 CaRe data:\n",
-    "  Pearson: ", round(cor(jointTable$SingleCellcount, jointTable$log2CaReCount, method="pearson"), 3),
-    "\n  Spearman: ", round(cor(jointTable$SingleCellcount, jointTable$log2CaReCount, method="spearman"), 3),
-    
-    "\n\nCorrelation between 10X counts and CaRe counts:\n",
-    "  Pearson: ", round(cor(jointTable$SingleCellcount, jointTable$CaRecount, method="pearson"), 3),
-    "\n  Spearman: ", round(cor(jointTable$SingleCellcount, jointTable$CaRecount, method="spearman"), 3)
-  )
-  
-  transformations <- list(
-    CaRecount = "Raw CaRe counts",
-    log1pCaReCount = "Log1p CaRe",
-    log2CaReCount = "Log2 CaRe"
-  )
-  
-  plots <- lapply(names(transformations), function(trans) {
-    ggplot(data = jointTable, aes_string(x = trans, y = "SingleCellcount")) +
-      geom_point() +
-      labs(
-        x = transformations[[trans]],
-        y = "SingleCell counts",
-        title = paste("SingleCell vs", transformations[[trans]])
-      ) +
-      theme_minimal()
-  })
-  names(plots) <- names(transformations)
-  
-  return(list(
-    data = jointTable,
-    plots = plots
-  ))
-}
-## compare host gene expression to viral expression
-host_virus_correlation <- function(joint_care_data, joint_rds, genes_list, viral_col,
-                                   output.dir = paste0(data.root, "EGS018/joint/hostVirus/"),
-                                   outputs = TRUE) {
-  if (outputs && !dir.exists(output.dir)) {
-    dir.create(output.dir, recursive = TRUE)
-  }
-  
-  for (sample_name in names(joint_care_data)) {
-    current_df <- joint_care_data[[sample_name]]
-    seurat_obj <- joint_rds[[sample_name]]
-    expression_data <- GetAssayData(object = seurat_obj, assay = "RNA", layer = "data")
-    expression_df <- data.frame(cellID = colnames(seurat_obj), stringsAsFactors = FALSE)
-    for (gene in genes_list) {
-      if (gene %in% rownames(seurat_obj)) {
-        expression_df[[gene]] <- as.numeric(expression_data[gene, ])
-      } else {
-        expression_df[[gene]] <- rep(0, ncol(seurat_obj))
-        warning(paste("Gene", gene, "not found in dataset. \n"))
-      }
-    }
-    
-    genes <- setdiff(colnames(expression_df), "cellID")
-    if (!viral_col %in% colnames(current_df)) {
-      cat("=== SAMPLE:", sample_name, "===\n")
-      cat("Column", viral_col, "not found in data. Skipping.\n\n")
-      next
-    }
-    care <- current_df[[viral_col]]
-    if (sd(care) == 0) {
-      cat("=== SAMPLE:", sample_name, "===\n")
-      cat("CaRe has zero variance (all values identical). Skipping correlation analysis.\n\n")
-      next
-    }
-    results <- data.frame()
-    for (gene in genes) {
-      gene_expr <- expression_df[[gene]]
-      # Use cells where at least one is expressed
-      cells_use <- (gene_expr > 0) | (care > 0)
-      n_cells <- sum(cells_use)
-      if (n_cells < 10) {
-        next
-      }
-      # Check for sufficient variance in both variables
-      gene_subset <- gene_expr[cells_use]
-      care_subset <- care[cells_use]
-      
-      if (sd(gene_subset) == 0 || sd(care_subset) == 0) {
-        next  # Skip genes with zero variance
-      }
-      
-      # Spearman correlation
-      cor_test <- cor.test(gene_expr[cells_use], 
-                           care[cells_use],
-                           method = "spearman",
-                           exact = FALSE)
-      
-      results <- rbind(results, data.frame(
-        gene = gene,
-        correlation = as.numeric(cor_test$estimate),
-        p_value = cor_test$p.value,
-        n_cells = n_cells,
-        gene_positive = sum(gene_expr > 0),
-        care_positive = sum(care > 0),
-        both_positive = sum((gene_expr > 0) & (care > 0))
-      ))
-    }
-    # Adjust p-values for FDR
-    results$p_adj <- p.adjust(results$p_value, method = "BH")
-    # Sort by significance
-    results <- results %>% 
-      filter(p_adj < 0.05) %>%
-      arrange(desc(abs(correlation)))
-    
-    # Print results
-    cat("===", sample_name, "RESULTS (ordered by magnitude) ===\n\n")
-    cat(sprintf("%-12s %10s %12s %12s %8s\n", 
-                "Gene", "Corr", "P-value", "P-adj", "Sig"))
-    cat(strrep("-", 65), "\n")
-    
-    for (i in 1:nrow(results)) {
-      r <- results[i,]
-      sig <- if (is.na(r$p_adj)) "NA" else if (r$p_adj < 0.001) "***" else if (r$p_adj < 0.01) "**" else if (r$p_adj < 0.05) "*" else "ns"
-      cat(sprintf("%-12s %10.4f %12.2e %12.2e %8s\n",
-                  r$gene, r$correlation, r$p_value, r$p_adj, sig))
-    }
-    cat(strrep("-", 65), "\n")
-    
-    # Save outputs if requested
-    if (outputs) {
-      # Add sample name column for context
-      results$sample <- sample_name
-      
-      # Save CSV
-      csv_file <- file.path(output.dir, paste0(sample_name, "_", viral_col, "_correlations.csv"))
-      write.csv(results, csv_file, row.names = FALSE)
-      
-      # Create plots
-      pdf_file <- file.path(output.dir, paste0(sample_name, "_", viral_col, "_correlation_barplots.pdf"))
-      pdf(pdf_file, width = 10, height = 8)
-      
-      # Plot 1: Correlation coefficient barplot
-      p1 <- ggplot(results, aes(x = reorder(gene, abs(correlation)), y = correlation, 
-                                fill = correlation < 0)) +
-        geom_col() +
-        coord_flip() +
-        scale_fill_manual(values = c("TRUE" = "#d73027", "FALSE" = "#4575b4"),
-                          labels = c("Positive", "Negative"),
-                          name = "Direction") +
-        labs(title = paste0(sample_name, " Gene-", viral_col, " Correlations"),
-             subtitle = "Spearman correlation coefficients (FDR < 0.05)",
-             x = "Gene",
-             y = "Correlation Coefficient") +
-        theme_minimal() +
-        theme(plot.title = element_text(face = "bold", size = 14),
-              axis.text = element_text(size = 10))
-      print(p1)
-      dev.off()
-      
-      pdf_file <- file.path(output.dir, paste0(sample_name, "_", viral_col, "_correlation_scatterplots.pdf"))
-      pdf(pdf_file, width = 10, height = 8)
-      # Plot 2: Scatter plots for top 6 genes
-      top_genes <- head(results$gene, 6)
-      
-      for (gene in top_genes) {
-        gene_expr <- expression_df[[gene]]
-        plot_data <- data.frame(
-          gene_expr = gene_expr,
-          care = care
-        )
-        
-        # Add jitter for better visualization of discrete values
-        p2 <- ggplot(plot_data, aes(x = gene_expr, y = care)) +
-          geom_point(alpha = 0.3, size = 2) +
-          geom_smooth(method = "lm", color = "#d73027", se = TRUE) +
-          labs(title = paste(sample_name, "-", gene, "vs", viral_col),
-               subtitle = sprintf("Spearman rho = %.3f, p-adj = %.2e",
-                                  results$correlation[results$gene == gene],
-                                  results$p_adj[results$gene == gene]),
-               x = paste(gene, "expression"),
-               y = viral_col) +
-          theme_minimal() +
-          theme(plot.title = element_text(face = "bold"))
-        print(p2)
-      }
-      dev.off()
-    }
-  }
-}
-
-# =============================================================================
 # Plotting
 # =============================================================================
-## volcano gene labels
-# Every label keeps a leader line to its own point, so a label that repels far
-# from its dot is still unambiguous. min.segment.length = 0 draws the segment at
-# any distance (the ggrepel default of 0.5 lines leaves nearby labels floating
-# unattached), and the force/padding pair pushes labels far enough off their
-# points that the line has something to span.
-# max_overlaps stays per-panel: a panel labelling every significant gene needs a
-# cap, one labelling a top-N list does not.
-volcano_gene_labels <- function(data, mapping, size = 3, max_overlaps = 25, ...) {
-  geom_text_repel(
-    data = data, mapping = mapping, size = size, fontface = "italic",
-    box.padding = 0.5, point.padding = 0.25,
-    force = 2, force_pull = 1,
-    min.segment.length = 0, segment.size = 0.25, segment.alpha = 0.9,
-    max.overlaps = max_overlaps, max.iter = 20000, seed = 42,
-    show.legend = FALSE, ...)
-}
 
-## tier tables and per-tier DEG, read back from disk
-# The tier assignment and the per-contrast DEG tables are written by the
-# extraction chunks; these read them back so a plotting chunk needs nothing
-# from another chunk's session state.
+## tier tables and per-tier DEG
 read_tier_tables <- function(table_dir, samples) {
   out <- lapply(setNames(samples, samples), function(sample_name) {
     f <- paste0(table_dir, sample_name, "_tiers.csv")
@@ -752,13 +410,11 @@ tier_safe_p <- function(expr) {
 }
 
 ## cNMF meta-program labels
-# One name per program across the four per-sample cNMF runs, so a program
-# that recurs in several samples carries the same name. Lives here rather
-# than in a chunk so any plotting chunk can use it without running another.
-# Shared annotation basis, defined on W2 (K=7, the largest run). Invitro, D195
-# and Pacute programs are assigned to it by exact maximum-weight INJECTIVE
-# matching on top-100 gene Jaccard, so no two programs of a sample share a name.
-# Each name is given by its top gene loadings:
+# One name per program across the four per-sample runs, so a program recurring
+# in several samples keeps the same name. The basis is W2 (K=7, the largest
+# run); Invitro, D195 and Pacute programs join it by exact maximum-weight
+# INJECTIVE matching on top-100 gene Jaccard, so no two programs of a sample
+# share a name. Each name is given by its top gene loadings:
 #   M1 resting/memory        W2_P1; D195_P1, Invitro_P1, Pacute_P1
 #                            BACH2, BCL11B, BCL2, CAMK4, ARID1B
 #   M2 activation/adhesion   W2_P2; D195_P2, Invitro_P3, Pacute_P2
@@ -806,13 +462,6 @@ cnmf_metaprogram_labels <- list(
 )
 stopifnot(!any(vapply(cnmf_metaprogram_labels, anyDuplicated, integer(1)) > 0))
 
-# Programs of the joint Pacute + W2 cNMF run (cleaned, K = 6), named by the
-# metaprogram each matches in the per-sample runs: Pattern_1 carries BACH2,
-# GPHN, RASGRF2 and SATB1, Pattern_2 INPP4B, FKBP5, SKAP1 and SIK3, Pattern_3
-# the actin and ribosomal genes, Pattern_4 GZMB, NKG7 and PRF1, Pattern_5 the
-# KALRN/FRMD3/DTHD1 set, and Pattern_6 the MHC-II and myeloid contaminant.
-# The tier analysis reads both in vivo acute samples from this run, which puts
-# them on identical programs.
 cnmf_integrated_metaprogram_labels <- c(
   Pattern_1 = "M1 resting/memory",
   Pattern_2 = "M2 activation/adhesion",
@@ -889,19 +538,12 @@ plot_jitter_marginal <- function(df, title = NULL, xlims = c(0, 9.1), ylims = c(
                                  theme = theme(plot.title = element_text(hjust = 0.5,
                                                                          size = 11)))
   }
-  # The two R² the panel title carries, plus the cell counts behind them,
-  # attached to the returned plot so a caller prints the values on the panel
-  # instead of recomputing the correlation.
+  # R^2 and cell counts
   attr(combined, "r2") <- list(all = r2_all, non_zero = r2_nz,
                                n = nrow(df), n_non_zero = nrow(nz))
   combined
 }
 
-# Print the R² of a plot_jitter_marginal panel: squared Pearson correlation of
-# the log1p Ca*Re and TenX counts over all cells, and over cells positive in
-# both assays (Ca*Re > 0 & TenX > 0), which is the "non-zero" value in the
-# panel title. R² is NA where a group has fewer than two cells or no variance
-# in either assay, as in the uninfected samples whose Ca*Re counts are all zero.
 print_jitter_r2 <- function(p, label) {
   r2 <- attr(p, "r2")
   fmt <- function(x) if (is.null(x) || is.na(x)) "n/a" else sprintf("%.3f", x)
@@ -911,20 +553,6 @@ print_jitter_r2 <- function(p, label) {
 }
 
 ## plot a UMAP
-# point_order controls draw order:
-#   "foreground_last" draws zero cells as a flat, semi-transparent background
-#                     layer, then non-zero cells on top sorted by `colorby`.
-#                     Both layers use the same point size, so the red area on
-#                     the panel stays proportional to the number of positive
-#                     cells even though they render on top; zero_alpha lets a
-#                     buried positive tint through the gray above it.
-#   "shuffled"        draws every cell in one permuted layer, so non-zero cells
-#                     intercalate with the gray rather than covering it
-# The permutation is keyed on cellID when that column is present, so two panels
-# of the same cells -- the TenX and Ca*Re views of one sample -- share an
-# intercalation and differ only in color and point size.
-# low_frac sets where the non-zero ramp starts, as a fraction of the way from
-# white to `color`, so a count of 1 is a visible tint rather than background gray.
 plotUMAP <- function(data, colorby, title, output_dir, saveas, comparison = FALSE,
                      color = "darkblue",
                      point_order = c("foreground_last", "shuffled"), seed = 1,
@@ -984,14 +612,7 @@ plotUMAP <- function(data, colorby, title, output_dir, saveas, comparison = FALS
   return(umap)
 }
 
-## shared scale for a set of density UMAPs
-# Panels that get compared have to smooth alike and share a colour scale, so the
-# bandwidth, the contour breaks and the area unit are computed once over every
-# column that will be drawn, then handed to each plotDensityUMAP call.
-# area_frac is the patch the contour levels are quoted per, as a fraction of the
-# UMAP bounding box: at 0.01 a level of 100 means a patch covering 1% of the
-# panel holds about 100 positive cells. UMAP coordinates have no scale of their
-# own, so levels are quoted per fraction of the panel rather than per unit area.
+## density UMAP scale
 umapDensityScale <- function(data, cols, area_frac = 0.01, n_breaks = 7,
                              grid_n = 200) {
   lims <- c(range(data$UMAP1), range(data$UMAP2))
@@ -1008,10 +629,7 @@ umapDensityScale <- function(data, cols, area_frac = 0.01, n_breaks = 7,
     return(list(h = h, lims = lims, area_unit = area_unit, area_frac = area_frac,
                 breaks = c(0, 1), legend_breaks = c(0, 1)))
   }
-  # Columns sharing a scale can differ a lot in magnitude, and a surface whose
-  # own peak sits below the first contour draws nothing at all. Space the
-  # contours so the weakest column still clears its first one; the legend keeps
-  # round numbers of its own, so the ticks stay readable however fine this gets.
+  # Space contours 
   weak <- min(peaks[peaks > 0])
   n_contours <- min(40, max(n_breaks, ceiling(peak / (weak / 2))))
   brks <- seq(0, peak, length.out = n_contours + 1)
@@ -1020,17 +638,7 @@ umapDensityScale <- function(data, cols, area_frac = 0.01, n_breaks = 7,
        breaks = brks, legend_breaks = legend_brks[legend_brks <= peak])
 }
 
-## plot the density of the positive cells on a UMAP
-# Every cell is drawn gray, then filled contours of the kernel density of the
-# cells with colorby > 0, scaled so a level reads as positive cells per
-# area_frac of the panel. The band below the first contour is left unfilled, so
-# regions with little signal show the cells rather than a wash of colour.
-# A density needs points to smooth: with fewer than min_cells positives the
-# contour layer is dropped and the panel is the gray cells alone, rather than
-# implying a spatial pattern the counts do not support.
-# legend_ends_only labels the colourbar at its two ends (0 and the shared peak)
-# instead of at the pretty ticks, so the scale span is what a reader compares
-# between panels.
+## density UMAP plot
 plotDensityUMAP <- function(data, colorby, title, output_dir, saveas,
                             density_scale, color = "red", legend_label = NULL,
                             min_cells = 10, legend_ends_only = FALSE) {
@@ -1186,1055 +794,6 @@ create_identity_umap <- function(data, col1 = NULL, col2 = NULL,
 
   return(identity_umap)
 }
-## plot FM barcode on UMAP
-plotBarcodeUMAP <- function(data, title, min_count = 1, max_count = Inf,
-                            output_dir = paste0(data.root, "EGS024/"),
-                            saveas = paste0("UMAP_", title, ".pdf")) {
-  # Count cells per barcode, excluding "none"
-  barcode_counts <- table(data$barcode)
-  target_barcodes <- names(barcode_counts[
-    barcode_counts >= min_count &
-      barcode_counts <= max_count &
-      names(barcode_counts) != "none"
-  ])
-  n_targets <- length(target_barcodes)
-  
-  if (n_targets == 0) {
-    cat("No barcodes found with count in [", min_count, ",", max_count, "]\n")
-    return(NULL)
-  }
-  
-  # Assign colors: unique hue per target barcode, gray93 for everything else
-  target_colors <- setNames(scales::hue_pal()(n_targets), target_barcodes)
-  target_colors["none"] <- "#E5E5E5"
-  
-  plot_data <- data
-  plot_data$barcode <- factor(plot_data$barcode, levels = c("none", target_barcodes))
-  plot_data <- arrange(plot_data, barcode)
-  
-  p <- ggplot(plot_data, aes(x = UMAP1, y = UMAP2, color = barcode)) +
-    geom_point(aes(size = barcode)) +
-    scale_color_manual(values = target_colors, na.value = "#E5E5E5") +
-    scale_size_manual(
-      values = setNames(c(0.5, rep(0.8, n_targets)), c("none", target_barcodes)),
-      na.value = 0.5
-    ) +
-    theme_classic() +
-    theme(aspect.ratio = 1) +
-    theme(legend.position = "none") +
-    ggtitle(title)
-  
-  ggsave(p, file = paste0(output_dir, saveas),
-         device = "pdf")
-  
-  return(p)
-}
-# =============================================================================
-# DEG Analysis
-# =============================================================================
-## perform comprehensive subset analysis
-analyze_cell_subset <- function(seurat_obj, 
-                                subset_cells_1, 
-                                subset_cells_2 = NULL, 
-                                min_pct = 0.1,
-                                group_names = c("group1", "group2")) {
-  
-  # Input validation
-  if (!is(seurat_obj, "Seurat")) {
-    stop("First argument must be a Seurat object")
-  }
-  
-  if (!is.vector(subset_cells_1)) {
-    stop("subset_cells_1 must be a vector of cell IDs")
-  }
-  
-  # Determine comparison mode
-  two_group_mode <- !is.null(subset_cells_2)
-  
-  if (two_group_mode) {
-    if (!is.vector(subset_cells_2)) {
-      stop("subset_cells_2 must be a vector of cell IDs")
-    }
-    cat("Running two-group comparison mode\n")
-  } else {
-    cat("Running single-group comparison mode (subset vs rest)\n")
-  }
-  
-  # Convert cell names to character vectors
-  subset_cells_1 <- as.character(subset_cells_1)
-  if (two_group_mode) {
-    subset_cells_2 <- as.character(subset_cells_2)
-    
-    # Check for overlap between groups
-    overlap <- intersect(subset_cells_1, subset_cells_2)
-    if (length(overlap) > 0) {
-      stop(sprintf("Found %d cells present in both subset_cells_1 and subset_cells_2. Groups must be mutually exclusive.",
-                   length(overlap)))
-    }
-  }
-  
-  # Validate subset_cells_1
-  valid_cells_1 <- subset_cells_1 %in% colnames(seurat_obj)
-  if (!any(valid_cells_1)) {
-    stop("None of the provided cell IDs in subset_cells_1 were found in the Seurat object")
-  }
-  
-  if (!all(valid_cells_1)) {
-    warning(sprintf("%d cells from subset_cells_1 were not found in the Seurat object",
-                    sum(!valid_cells_1)))
-    subset_cells_1 <- subset_cells_1[valid_cells_1]
-  }
-  
-  # Validate subset_cells_2 if provided
-  if (two_group_mode) {
-    valid_cells_2 <- subset_cells_2 %in% colnames(seurat_obj)
-    if (!any(valid_cells_2)) {
-      stop("None of the provided cell IDs in subset_cells_2 were found in the Seurat object")
-    }
-    
-    if (!all(valid_cells_2)) {
-      warning(sprintf("%d cells from subset_cells_2 were not found in the Seurat object",
-                      sum(!valid_cells_2)))
-      subset_cells_2 <- subset_cells_2[valid_cells_2]
-    }
-  }
-  
-  # Print diagnostic information
-  cat(sprintf("Found %d cells in %s\n", length(subset_cells_1), group_names[1]))
-  if (two_group_mode) {
-    cat(sprintf("Found %d cells in %s\n", length(subset_cells_2), group_names[2]))
-  } else {
-    n_rest <- ncol(seurat_obj) - length(subset_cells_1)
-    cat(sprintf("Comparing against %d cells in rest of dataset\n", n_rest))
-  }
-  
-  # Add metadata column for group membership
-  if (two_group_mode) {
-    seurat_obj$comparison_group <- ifelse(
-      colnames(seurat_obj) %in% subset_cells_1, group_names[1],
-      ifelse(colnames(seurat_obj) %in% subset_cells_2, group_names[2], "excluded")
-    )
-    # Subset to only include cells in one of the two groups
-    seurat_obj <- subset(seurat_obj, cells = c(subset_cells_1, subset_cells_2))
-    cat(sprintf("Analysis will include %d total cells\n", ncol(seurat_obj)))
-  } else {
-    seurat_obj$comparison_group <- ifelse(
-      colnames(seurat_obj) %in% subset_cells_1, group_names[1], group_names[2]
-    )
-  }
-  
-  # Check for cluster information
-  if (!"seurat_clusters" %in% colnames(seurat_obj@meta.data)) {
-    stop("No 'seurat_clusters' column found in metadata. Please run FindClusters() first")
-  }
-  
-  # Get unique clusters for each group
-  clusters_group1 <- unique(seurat_obj$seurat_clusters[seurat_obj$comparison_group == group_names[1]])
-  clusters_group2 <- unique(seurat_obj$seurat_clusters[seurat_obj$comparison_group == group_names[2]])
-  
-  cat(sprintf("%s cells are found in %d clusters: %s\n",
-              group_names[1], length(clusters_group1),
-              paste(sort(clusters_group1), collapse = ", ")))
-  cat(sprintf("%s cells are found in %d clusters: %s\n",
-              group_names[2], length(clusters_group2),
-              paste(sort(clusters_group2), collapse = ", ")))
-  
-  # Get overlapping clusters
-  overlap_clusters <- intersect(clusters_group1, clusters_group2)
-  cat(sprintf("Overlapping clusters: %d (%s)\n",
-              length(overlap_clusters),
-              ifelse(length(overlap_clusters) > 0, 
-                     paste(sort(overlap_clusters), collapse = ", "),
-                     "none")))
-  
-  # Initialize results list
-  results <- list()
-  results$metadata <- list(
-    mode = ifelse(two_group_mode, "two_group", "single_group"),
-    comparison_summary = sprintf("Comparing %s (n=%d) vs %s (n=%d)", 
-                                 group_names[1], length(subset_cells_1),
-                                 group_names[2], 
-                                 ifelse(two_group_mode, length(subset_cells_2), 
-                                        ncol(seurat_obj) - length(subset_cells_1))),
-    group1_name = group_names[1],
-    group2_name = group_names[2],
-    n_cells_group1 = length(subset_cells_1),
-    n_cells_group2 = ifelse(two_group_mode, length(subset_cells_2), 
-                            ncol(seurat_obj) - length(subset_cells_1)),
-    group_names = group_names,
-    overlap_clusters = overlap_clusters
-  )
-  
-  # 1. Overall differential expression (across all clusters)
-  cat("\n=== Overall Differential Expression Analysis ===\n")
-  Idents(seurat_obj) <- factor(seurat_obj$comparison_group, levels = group_names)
-  
-  results$overall_de <- tryCatch({
-    de_results <- FindMarkers(seurat_obj,
-                              ident.1 = group_names[1],
-                              ident.2 = group_names[2],
-                              min.pct = min_pct,
-                              test.use = "wilcox",
-                              verbose = FALSE)
-    
-    cat(sprintf("Found %d differentially expressed genes (all p-values)\n", nrow(de_results)))
-    de_results
-  }, error = function(e) {
-    warning(sprintf("Error in overall DE analysis: %s", e$message))
-    NULL
-  })
-  
-  # Filter for significant overall markers
-  results$overall_de_significant <- tryCatch({
-    if (!is.null(results$overall_de) && nrow(results$overall_de) > 0) {
-      sig_results <- results$overall_de[
-        abs(results$overall_de$avg_log2FC) > 0.5 & 
-          results$overall_de$p_val_adj < 0.01,
-      ]
-      
-      if (nrow(sig_results) > 0) {
-        n_up <- sum(sig_results$avg_log2FC > 0)
-        n_down <- nrow(sig_results) - n_up
-        cat(sprintf("Significant markers: %d total (%d up in %s, %d down)\n",
-                    nrow(sig_results), n_up, group_names[1], n_down))
-        sig_results$gene <- rownames(sig_results)
-        sig_results
-      } else {
-        cat("No markers passed significance thresholds\n")
-        NULL
-      }
-    } else {
-      NULL
-    }
-  }, error = function(e) {
-    warning("Error filtering overall markers: ", e$message)
-    NULL
-  })
-  
-  # 2. Cluster-specific analysis (only for overlapping clusters)
-  if (length(overlap_clusters) > 0) {
-    cat("\n=== Cluster-Specific Differential Expression Analysis ===\n")
-    cluster_results <- list()
-    
-    for(cluster in overlap_clusters) {
-      # Get cells from this cluster for each group
-      cluster_cells <- seurat_obj$seurat_clusters == cluster
-      group1_in_cluster <- sum(seurat_obj$comparison_group[cluster_cells] == group_names[1])
-      group2_in_cluster <- sum(seurat_obj$comparison_group[cluster_cells] == group_names[2])
-      
-      # Require at least 3 cells per group for statistical power
-      if (group1_in_cluster < 3 || group2_in_cluster < 3) {
-        warning(sprintf("Skipping cluster %s: insufficient cells (%s: %d, %s: %d)\n",
-                        cluster, group_names[1], group1_in_cluster, 
-                        group_names[2], group2_in_cluster))
-        next
-      }
-      
-      # Create a temporary Seurat object for this cluster
-      cluster_obj <- subset(seurat_obj, seurat_clusters == cluster)
-      Idents(cluster_obj) <- factor(cluster_obj$comparison_group, levels = group_names)
-      
-      # Perform DE analysis within this cluster
-      tryCatch({
-        de_results <- FindMarkers(cluster_obj,
-                                  ident.1 = group_names[1],
-                                  ident.2 = group_names[2],
-                                  min.pct = min_pct,
-                                  test.use = "wilcox",
-                                  verbose = FALSE)
-        
-        cluster_results[[paste0("cluster_", cluster)]] <- de_results
-        
-        cat(sprintf("Cluster %s: %d DEGs (%s: %d cells, %s: %d cells)\n",
-                    cluster, nrow(de_results), 
-                    group_names[1], group1_in_cluster,
-                    group_names[2], group2_in_cluster))
-        
-      }, error = function(e) {
-        warning(sprintf("Error in DE analysis for cluster %s: %s", cluster, e$message))
-      })
-    }
-    
-    results$cluster_specific <- cluster_results
-    
-    # Filter cluster-specific results for significance
-    results$cluster_specific_significant <- tryCatch({
-      if (length(cluster_results) > 0) {
-        significant_by_cluster <- lapply(names(cluster_results), function(cluster_name) {
-          de_results <- cluster_results[[cluster_name]]
-          
-          if (!is.null(de_results) && nrow(de_results) > 0) {
-            sig_results <- de_results[
-              abs(de_results$avg_log2FC) > 0.5 & 
-                de_results$p_val_adj < 0.01,
-            ]
-            
-            if (nrow(sig_results) > 0) {
-              sig_results$gene <- rownames(sig_results)
-              sig_results
-            } else {
-              NULL
-            }
-          } else {
-            NULL
-          }
-        })
-        
-        names(significant_by_cluster) <- names(cluster_results)
-        significant_by_cluster <- significant_by_cluster[!sapply(significant_by_cluster, is.null)]
-        
-        if (length(significant_by_cluster) > 0) {
-          total_sig <- sum(sapply(significant_by_cluster, nrow))
-          cat(sprintf("\nCluster-specific significant markers: %d genes across %d clusters\n",
-                      total_sig, length(significant_by_cluster)))
-          
-          for (cluster_name in names(significant_by_cluster)) {
-            n_markers <- nrow(significant_by_cluster[[cluster_name]])
-            n_up <- sum(significant_by_cluster[[cluster_name]]$avg_log2FC > 0)
-            n_down <- n_markers - n_up
-            cat(sprintf("  %s: %d markers (%d up in %s, %d down)\n", 
-                        cluster_name, n_markers, group_names[1], n_up, n_down))
-          }
-          
-          significant_by_cluster
-        } else {
-          cat("\nNo significant cluster-specific markers found\n")
-          NULL
-        }
-      } else {
-        NULL
-      }
-    }, error = function(e) {
-      warning("Error filtering cluster-specific markers: ", e$message)
-      NULL
-    })
-  } else {
-    cat("\n=== Cluster-Specific Analysis Skipped ===\n")
-    cat("No overlapping clusters between groups\n")
-    results$cluster_specific <- NULL
-    results$cluster_specific_significant <- NULL
-  }
-  
-  # 3. Pseudo-bulk expression profiles
-  cat("\n=== Pseudo-bulk Expression ===\n")
-  results$pseudobulk_expression <- tryCatch({
-    pb_expr <- AggregateExpression(seurat_obj,
-                                   group.by = "comparison_group",
-                                   assays = "RNA",
-                                   return.seurat = FALSE)$RNA
-    cat(sprintf("Calculated pseudo-bulk expression for %d genes\n", nrow(pb_expr)))
-    pb_expr
-  }, error = function(e) {
-    warning("Error calculating pseudo-bulk expression: ", e$message)
-    NULL
-  })
-  
-  # Print final summary
-  cat("\n=== Analysis Summary ===\n")
-  cat(sprintf("Comparison: %s\n", results$metadata$comparison_summary))
-  cat(sprintf("Mode: %s\n", results$metadata$mode))
-  
-  return(results)
-}
-## analyze_cell_subset, without using clusters
-analyze_cell_subset_unclustered <- function(seurat_obj, 
-                                            subset_cells_1, 
-                                            subset_cells_2 = NULL,
-                                            min_pct = 0.1,
-                                            group_names = c("group1", "group2")) {
-  # Check package dependencies
-  rlang::check_installed("Seurat", reason = "to perform single-cell analysis")
-  rlang::check_installed("dplyr", reason = "for data manipulation")
-  
-  require(Seurat)
-  require(dplyr)
-  
-  # Input validation
-  if (!is(seurat_obj, "Seurat")) {
-    stop("First argument must be a Seurat object")
-  }
-  
-  if (!is.vector(subset_cells_1)) {
-    stop("subset_cells_1 must be a vector of cell IDs")
-  }
-  
-  # Determine comparison mode
-  two_group_mode <- !is.null(subset_cells_2)
-  
-  if (two_group_mode) {
-    if (!is.vector(subset_cells_2)) {
-      stop("subset_cells_2 must be a vector of cell IDs")
-    }
-    cat("Running two-group comparison mode (unclustered)\n")
-  } else {
-    cat("Running single-group comparison mode (subset vs rest, unclustered)\n")
-  }
-  
-  # Convert cell names to character vectors
-  subset_cells_1 <- as.character(subset_cells_1)
-  if (two_group_mode) {
-    subset_cells_2 <- as.character(subset_cells_2)
-    
-    # Check for overlap between groups
-    overlap <- intersect(subset_cells_1, subset_cells_2)
-    if (length(overlap) > 0) {
-      stop(sprintf("Found %d cells present in both subset_cells_1 and subset_cells_2. Groups must be mutually exclusive.",
-                   length(overlap)))
-    }
-  }
-  
-  # Validate subset_cells_1
-  valid_cells_1 <- subset_cells_1 %in% colnames(seurat_obj)
-  if (!any(valid_cells_1)) {
-    stop("None of the provided cell IDs in subset_cells_1 were found in the Seurat object")
-  }
-  
-  if (!all(valid_cells_1)) {
-    n_invalid <- sum(!valid_cells_1)
-    n_valid <- sum(valid_cells_1)
-    warning(sprintf("%d cells from subset_cells_1 were not found in the Seurat object. %d valid cells remain.",
-                    n_invalid, n_valid))
-    
-    # Show some examples of invalid cells for debugging
-    if (n_invalid <= 5) {
-      cat(sprintf("Invalid cell IDs: %s\n", paste(subset_cells_1[!valid_cells_1], collapse = ", ")))
-    }
-    
-    subset_cells_1 <- subset_cells_1[valid_cells_1]
-  }
-  
-  # Early check for insufficient cells
-  if (length(subset_cells_1) < 3) {
-    stop(sprintf("Insufficient valid cells in subset_cells_1: found %d, need at least 3 for statistical analysis.\nConsider checking your cell ID format or filtering criteria.",
-                 length(subset_cells_1)))
-  }
-  
-  # Validate subset_cells_2 if provided
-  if (two_group_mode) {
-    valid_cells_2 <- subset_cells_2 %in% colnames(seurat_obj)
-    if (!any(valid_cells_2)) {
-      stop("None of the provided cell IDs in subset_cells_2 were found in the Seurat object")
-    }
-    
-    if (!all(valid_cells_2)) {
-      n_invalid <- sum(!valid_cells_2)
-      n_valid <- sum(valid_cells_2)
-      warning(sprintf("%d cells from subset_cells_2 were not found in the Seurat object. %d valid cells remain.",
-                      n_invalid, n_valid))
-      
-      # Show some examples of invalid cells for debugging
-      if (n_invalid <= 5) {
-        cat(sprintf("Invalid cell IDs: %s\n", paste(subset_cells_2[!valid_cells_2], collapse = ", ")))
-      }
-      
-      subset_cells_2 <- subset_cells_2[valid_cells_2]
-    }
-    
-    # Early check for insufficient cells
-    if (length(subset_cells_2) < 3) {
-      stop(sprintf("Insufficient valid cells in subset_cells_2: found %d, need at least 3 for statistical analysis.\nConsider checking your cell ID format or filtering criteria.",
-                   length(subset_cells_2)))
-    }
-  }
-  
-  # Print diagnostic information
-  cat(sprintf("\nDataset information:\n"))
-  cat(sprintf("  - Total cells in dataset: %d\n", ncol(seurat_obj)))
-  cat(sprintf("  - %s: %d cells (%.1f%% of total)\n", 
-              group_names[1], 
-              length(subset_cells_1),
-              100 * length(subset_cells_1) / ncol(seurat_obj)))
-  
-  if (two_group_mode) {
-    cat(sprintf("  - %s: %d cells (%.1f%% of total)\n",
-                group_names[2],
-                length(subset_cells_2),
-                100 * length(subset_cells_2) / ncol(seurat_obj)))
-  } else {
-    n_rest <- ncol(seurat_obj) - length(subset_cells_1)
-    cat(sprintf("  - %s: %d cells (%.1f%% of total)\n",
-                group_names[2],
-                n_rest,
-                100 * n_rest / ncol(seurat_obj)))
-  }
-  
-  # Add metadata column for group membership
-  if (two_group_mode) {
-    seurat_obj$comparison_group <- ifelse(
-      colnames(seurat_obj) %in% subset_cells_1, group_names[1],
-      ifelse(colnames(seurat_obj) %in% subset_cells_2, group_names[2], "excluded")
-    )
-    # Subset to only include cells in one of the two groups
-    seurat_obj <- subset(seurat_obj, cells = c(subset_cells_1, subset_cells_2))
-    cat(sprintf("  - Analysis will include %d total cells\n", ncol(seurat_obj)))
-  } else {
-    seurat_obj$comparison_group <- ifelse(
-      colnames(seurat_obj) %in% subset_cells_1, group_names[1], group_names[2]
-    )
-  }
-  
-  # Count cells in each group
-  n_group1 <- sum(seurat_obj$comparison_group == group_names[1])
-  n_group2 <- sum(seurat_obj$comparison_group == group_names[2])
-  
-  cat(sprintf("\nComparing:\n"))
-  cat(sprintf("  - %s: %d cells\n", group_names[1], n_group1))
-  cat(sprintf("  - %s: %d cells\n", group_names[2], n_group2))
-  
-  # Initialize results list
-  results <- list()
-  results$metadata <- list(
-    mode = ifelse(two_group_mode, "two_group", "single_group"),
-    n_cells_group1 = n_group1,
-    n_cells_group2 = n_group2,
-    group_names = group_names,
-    analysis_type = "unclustered"
-  )
-  
-  # Check if we have enough cells for comparison
-  if (n_group1 < 3 || n_group2 < 3) {
-    stop(sprintf("Insufficient cells for comparison (%s: %d, %s: %d). Need at least 3 in each group.",
-                 group_names[1], n_group1, group_names[2], n_group2))
-  }
-  
-  # 1. Perform unclustered differential expression analysis
-  cat("\n=== Differential Expression Analysis ===\n")
-  
-  # Set identities for comparison
-  Idents(seurat_obj) <- factor(seurat_obj$comparison_group, levels = group_names)
-  
-  # Perform differential expression
-  results$de_markers <- tryCatch({
-    de_results <- FindMarkers(seurat_obj,
-                              ident.1 = group_names[1],
-                              ident.2 = group_names[2],
-                              min.pct = min_pct,
-                              test.use = "wilcox",
-                              verbose = FALSE)
-    
-    # Add gene column
-    de_results$gene <- rownames(de_results)
-    
-    cat(sprintf("Successfully tested %d genes\n", nrow(de_results)))
-    cat(sprintf("  - Significant at p_val_adj < 0.05: %d genes\n", 
-                sum(de_results$p_val_adj < 0.05)))
-    cat(sprintf("  - Significant at p_val_adj < 0.01: %d genes\n",
-                sum(de_results$p_val_adj < 0.01)))
-    
-    de_results
-    
-  }, error = function(e) {
-    stop(sprintf("Error in differential expression analysis: %s", e$message))
-  })
-  
-  # 2. Filter for significant markers
-  cat("\nFiltering for significant markers (|avg_log2FC| > 0.5, p_val_adj < 0.01)...\n")
-  
-  results$de_markers_significant <- tryCatch({
-    if (!is.null(results$de_markers) && nrow(results$de_markers) > 0) {
-      sig_markers <- results$de_markers[
-        abs(results$de_markers$avg_log2FC) > 0.5 & 
-          results$de_markers$p_val_adj < 0.01,
-      ]
-      
-      if (nrow(sig_markers) > 0) {
-        # Count up and down
-        n_up <- sum(sig_markers$avg_log2FC > 0)
-        n_down <- sum(sig_markers$avg_log2FC < 0)
-        
-        cat(sprintf("Found %d significant markers\n", nrow(sig_markers)))
-        cat(sprintf("  - Upregulated in %s: %d genes\n", group_names[1], n_up))
-        cat(sprintf("  - Downregulated in %s: %d genes\n", group_names[1], n_down))
-        
-        sig_markers
-      } else {
-        cat("No markers passed significance thresholds\n")
-        NULL
-      }
-    } else {
-      cat("No differential expression results to filter\n")
-      NULL
-    }
-  }, error = function(e) {
-    warning("Error filtering significant markers: ", e$message)
-    NULL
-  })
-  
-  # 3. Additional filtering: moderate fold change threshold
-  results$de_markers_moderate <- tryCatch({
-    if (!is.null(results$de_markers) && nrow(results$de_markers) > 0) {
-      moderate_markers <- results$de_markers[
-        abs(results$de_markers$avg_log2FC) > 0.25 & 
-          results$de_markers$p_val_adj < 0.05,
-      ]
-      
-      if (nrow(moderate_markers) > 0) {
-        cat(sprintf("\nAlternative threshold (|avg_log2FC| > 0.25, p_val_adj < 0.05):\n"))
-        cat(sprintf("  - Found %d markers\n", nrow(moderate_markers)))
-        moderate_markers
-      } else {
-        NULL
-      }
-    } else {
-      NULL
-    }
-  }, error = function(e) {
-    warning("Error applying moderate thresholds: ", e$message)
-    NULL
-  })
-  
-  # 4. Calculate pseudo-bulk expression profiles
-  cat("\n=== Pseudo-bulk Expression ===\n")
-  results$pseudobulk_expression <- tryCatch({
-    pb_expr <- AggregateExpression(seurat_obj,
-                                   group.by = "comparison_group",
-                                   assays = "RNA",
-                                   return.seurat = FALSE)$RNA
-    cat(sprintf("Calculated pseudo-bulk expression for %d genes\n", nrow(pb_expr)))
-    pb_expr
-  }, error = function(e) {
-    warning("Error calculating pseudo-bulk expression: ", e$message)
-    NULL
-  })
-  
-  # Summary of analysis
-  cat("\n=== Analysis Summary ===\n")
-  cat(sprintf("Mode: %s\n", results$metadata$mode))
-  cat(sprintf("Analysis type: %s\n", results$metadata$analysis_type))
-  cat(sprintf("Groups: %s (%d cells) vs %s (%d cells)\n",
-              group_names[1], n_group1,
-              group_names[2], n_group2))
-  cat(sprintf("Total genes tested: %d\n", 
-              ifelse(!is.null(results$de_markers), 
-                     nrow(results$de_markers), 0)))
-  cat(sprintf("Significant markers (strict): %s\n",
-              ifelse(!is.null(results$de_markers_significant),
-                     sprintf("%d genes", nrow(results$de_markers_significant)),
-                     "None")))
-  cat(sprintf("Significant markers (moderate): %s\n",
-              ifelse(!is.null(results$de_markers_moderate),
-                     sprintf("%d genes", nrow(results$de_markers_moderate)),
-                     "None")))
-  
-  if (!is.null(results$de_markers_significant) && 
-      nrow(results$de_markers_significant) > 0) {
-    sig_markers <- results$de_markers_significant
-    n_up <- sum(sig_markers$avg_log2FC > 0)
-    n_down <- sum(sig_markers$avg_log2FC < 0)
-    
-    cat(sprintf("  - Upregulated in %s: %d\n", group_names[1], n_up))
-    cat(sprintf("  - Downregulated in %s: %d\n", group_names[1], n_down))
-    
-    # Report top markers only if they exist
-    if (n_up > 0) {
-      top_up <- head(sig_markers[order(-sig_markers$avg_log2FC), ], 5)
-      cat(sprintf("\nTop markers upregulated in %s:\n", group_names[1]))
-      for (i in 1:nrow(top_up)) {
-        cat(sprintf("  %d. %s (log2FC = %.2f, p_adj = %.2e)\n",
-                    i, top_up$gene[i], top_up$avg_log2FC[i], top_up$p_val_adj[i]))
-      }
-    }
-    
-    if (n_down > 0) {
-      top_down <- head(sig_markers[order(sig_markers$avg_log2FC), ], 5)
-      cat(sprintf("\nTop markers downregulated in %s:\n", group_names[1]))
-      for (i in 1:nrow(top_down)) {
-        cat(sprintf("  %d. %s (log2FC = %.2f, p_adj = %.2e)\n",
-                    i, top_down$gene[i], top_down$avg_log2FC[i], top_down$p_val_adj[i]))
-      }
-    }
-  }
-  
-  cat("\n")
-  
-  return(results)
-}
-## visualize subset analysis results
-plot_subset_analysis <- function(seurat_obj, analysis_results, subset_cells, save = TRUE, output_dir = plot.root) {
-  require(ggplot2)
-  
-  if (!is(seurat_obj, "Seurat")) {
-    stop("First argument must be a Seurat object")
-  }
-  
-  if (!is.list(analysis_results)) {
-    stop("analysis_results must be the output from analyze_cell_subset()")
-  }
-  
-  plots <- list()
-  
-  # 1. UMAP highlighting subset cells
-  if ("umap" %in% names(seurat_obj@reductions)) {
-    seurat_obj$in_subset <- colnames(seurat_obj) %in% subset_cells
-    plots$umap <- DimPlot(seurat_obj, 
-                          group.by = "in_subset", 
-                          label = TRUE) +
-      ggtitle("Subset Cells in UMAP")
-  } else {
-    warning("No UMAP reduction found. Skipping UMAP plot.")
-  }
-  
-  # 2. Expression heatmap of top markers
-  if (!is.null(analysis_results$conserved_markers) && 
-      nrow(analysis_results$conserved_markers) > 0) {
-    top_conserved <- head(rownames(analysis_results$conserved_markers), 20)
-    plots$heatmap <- DoHeatmap(seurat_obj, 
-                               features = top_conserved,
-                               group.by = c("in_subset", "seurat_clusters"))
-  }
-  
-  # 3. Violin plots for top markers by cluster
-  if (!is.null(analysis_results$top_genes)) {
-    for(cluster in names(analysis_results$top_genes)) {
-      top_genes <- analysis_results$top_genes[[cluster]]
-      if (length(top_genes) > 0) {
-        plots[[paste0("violin_", cluster)]] <- VlnPlot(seurat_obj,
-                                                       features = head(top_genes, 5),
-                                                       split.by = "in_subset",
-                                                       group.by = "seurat_clusters")
-      }
-    }
-  }
-  
-  if (save == TRUE) {
-    # Create output directory if it doesn't exist
-    dir.create(output_dir, showWarnings = FALSE, recursive = TRUE)
-    
-    # Function to safely save a plot
-    save_plot <- function(plot, filename, w = width, h = height) {
-      if (!is.null(plot)) {
-        ggsave(
-          filename = file.path(output_dir, filename),
-          plot = plot,
-          width = w,
-          height = h
-        )
-        return(TRUE)
-      }
-      return(FALSE)
-    }
-    
-    # Initialize counters for summary
-    saved_plots <- character()
-    
-    # 1. Save UMAP plot
-    if (!is.null(plots$umap)) {
-      if (save_plot(plots$umap, "umap_subset_cells.png", w = 8, h = 8)) {
-        saved_plots <- c(saved_plots, "UMAP plot")
-      }
-    }
-    
-    # 2. Save heatmap
-    if (!is.null(plots$heatmap)) {
-      if (save_plot(plots$heatmap, "marker_heatmap.png", w = 12, h = 10)) {
-        saved_plots <- c(saved_plots, "Marker heatmap")
-      }
-    }
-    
-    print("Plots saved")
-    }
-  
-  return(plots)
-}
-## save analysis results to files
-save_subset_analysis <- function(analysis_results, output_dir) {
-  require(openxlsx)
-  
-  # Create output directory if it doesn't exist
-  dir.create(output_dir, showWarnings = FALSE, recursive = TRUE)
-  
-  # 0. Save overall differential expression results
-  if (!is.null(analysis_results$overall_de) && nrow(analysis_results$overall_de) > 0) {
-    wb <- createWorkbook()
-    
-    # All results
-    de_results <- analysis_results$overall_de
-    de_results$gene <- rownames(de_results)
-    addWorksheet(wb, "all_genes")
-    writeData(wb, "all_genes", de_results)
-    
-    # Save workbook
-    saveWorkbook(wb, file.path(output_dir, "overall_DE.xlsx"), overwrite = TRUE)
-  }
-  
-  # 0b. Save overall SIGNIFICANT markers
-  if (!is.null(analysis_results$overall_de_significant) && 
-      nrow(analysis_results$overall_de_significant) > 0) {
-    
-    sig_results <- analysis_results$overall_de_significant
-    
-    # Split into upregulated and downregulated
-    upregulated <- sig_results[sig_results$avg_log2FC > 0, ]
-    downregulated <- sig_results[sig_results$avg_log2FC < 0, ]
-    
-    # Sort by fold change
-    if (nrow(upregulated) > 0) {
-      upregulated <- upregulated[order(-upregulated$avg_log2FC), ]
-    }
-    if (nrow(downregulated) > 0) {
-      downregulated <- downregulated[order(downregulated$avg_log2FC), ]
-    }
-    
-    wb <- createWorkbook()
-    
-    # Add upregulated genes tab
-    if (nrow(upregulated) > 0) {
-      addWorksheet(wb, "upregulated")
-      writeData(wb, "upregulated", upregulated)
-    }
-    
-    # Add downregulated genes tab
-    if (nrow(downregulated) > 0) {
-      addWorksheet(wb, "downregulated")
-      writeData(wb, "downregulated", downregulated)
-    }
-    
-    # Save workbook
-    saveWorkbook(wb, file.path(output_dir, "overall_significant.xlsx"), overwrite = TRUE)
-    
-    # Print summary
-    cat(sprintf("\nOverall significant markers saved:\n"))
-    cat(sprintf("  - Upregulated genes: %d\n", nrow(upregulated)))
-    cat(sprintf("  - Downregulated genes: %d\n", nrow(downregulated)))
-  }
-  
-  # 1. Save cluster-specific differential expression results
-  if (length(analysis_results$cluster_specific) > 0) {
-    # Create a workbook for cluster-specific results
-    wb <- createWorkbook()
-    
-    for (cluster_name in names(analysis_results$cluster_specific)) {
-      de_results <- analysis_results$cluster_specific[[cluster_name]]
-      if (!is.null(de_results) && nrow(de_results) > 0) {
-        # Add cluster results as a worksheet
-        addWorksheet(wb, cluster_name)
-        # Add data with gene names as a column
-        de_results$gene <- rownames(de_results)
-        writeData(wb, cluster_name, de_results)
-      }
-    }
-    
-    # Save the workbook
-    saveWorkbook(wb, file.path(output_dir, "cluster_specific_DE.xlsx"), overwrite = TRUE)
-  }
-  
-  # 1b. Save cluster-specific SIGNIFICANT markers
-  if (!is.null(analysis_results$cluster_specific_significant) &&
-      length(analysis_results$cluster_specific_significant) > 0) {
-    
-    wb <- createWorkbook()
-    
-    for (cluster_name in names(analysis_results$cluster_specific_significant)) {
-      sig_results <- analysis_results$cluster_specific_significant[[cluster_name]]
-      
-      if (!is.null(sig_results) && nrow(sig_results) > 0) {
-        # Split into upregulated and downregulated
-        upregulated <- sig_results[sig_results$avg_log2FC > 0, ]
-        downregulated <- sig_results[sig_results$avg_log2FC < 0, ]
-        
-        # Sort by fold change
-        if (nrow(upregulated) > 0) {
-          upregulated <- upregulated[order(-upregulated$avg_log2FC), ]
-        }
-        if (nrow(downregulated) > 0) {
-          downregulated <- downregulated[order(downregulated$avg_log2FC), ]
-        }
-        
-        # Add worksheet for upregulated genes
-        if (nrow(upregulated) > 0) {
-          sheet_name_up <- paste0(cluster_name, "_up")
-          # Truncate sheet name if too long (Excel limit is 31 characters)
-          if (nchar(sheet_name_up) > 31) {
-            sheet_name_up <- substr(sheet_name_up, 1, 31)
-          }
-          addWorksheet(wb, sheet_name_up)
-          writeData(wb, sheet_name_up, upregulated)
-        }
-        
-        # Add worksheet for downregulated genes
-        if (nrow(downregulated) > 0) {
-          sheet_name_down <- paste0(cluster_name, "_down")
-          # Truncate sheet name if too long
-          if (nchar(sheet_name_down) > 31) {
-            sheet_name_down <- substr(sheet_name_down, 1, 31)
-          }
-          addWorksheet(wb, sheet_name_down)
-          writeData(wb, sheet_name_down, downregulated)
-        }
-      }
-    }
-    
-    # Save workbook
-    saveWorkbook(wb, file.path(output_dir, "cluster_specific_significant.xlsx"), overwrite = TRUE)
-  }
-  
-  # 2. Save conserved markers
-  if (!is.null(analysis_results$conserved_markers) && 
-      nrow(analysis_results$conserved_markers) > 0) {
-    # Add gene names as a column
-    conserved_markers <- analysis_results$conserved_markers
-    conserved_markers$gene <- rownames(conserved_markers)
-    
-    # Create a new workbook for conserved markers
-    wb <- createWorkbook()
-    addWorksheet(wb, "conserved_markers")
-    writeData(wb, "conserved_markers", conserved_markers)
-    saveWorkbook(wb, file.path(output_dir, "conserved_markers.xlsx"), overwrite = TRUE)
-  }
-  
-  # 2b. Save significant conserved markers
-  if (!is.null(analysis_results$conserved_markers_significant) && 
-      nrow(analysis_results$conserved_markers_significant) > 0) {
-    # Add gene names as a column
-    conserved_markers_sig <- analysis_results$conserved_markers_significant
-    conserved_markers_sig$gene <- rownames(conserved_markers_sig)
-    
-    # Determine which fold change column to use for sorting
-    fc_column <- if ("mean_log2FC" %in% colnames(conserved_markers_sig)) {
-      "mean_log2FC"
-    } else if ("avg_log2FC" %in% colnames(conserved_markers_sig)) {
-      "avg_log2FC"
-    } else {
-      stop("No log2FC column found in conserved_markers_significant")
-    }
-    
-    # Split into upregulated and downregulated
-    upregulated <- conserved_markers_sig[conserved_markers_sig[[fc_column]] > 0, ]
-    downregulated <- conserved_markers_sig[conserved_markers_sig[[fc_column]] < 0, ]
-    
-    # Sort by fold change (descending for up, ascending for down)
-    if (nrow(upregulated) > 0) {
-      upregulated <- upregulated[order(-upregulated[[fc_column]]), ]
-    }
-    if (nrow(downregulated) > 0) {
-      downregulated <- downregulated[order(downregulated[[fc_column]]), ]
-    }
-    
-    # Create a new workbook for significant conserved markers
-    wb <- createWorkbook()
-    
-    # Add upregulated genes tab
-    if (nrow(upregulated) > 0) {
-      addWorksheet(wb, "upregulated")
-      writeData(wb, "upregulated", upregulated)
-    }
-    
-    # Add downregulated genes tab
-    if (nrow(downregulated) > 0) {
-      addWorksheet(wb, "downregulated")
-      writeData(wb, "downregulated", downregulated)
-    }
-    
-    # Save workbook
-    saveWorkbook(wb, file.path(output_dir, "conserved_markers_significant.xlsx"), overwrite = TRUE)
-    
-    # Print summary
-    cat(sprintf("\nSignificant conserved markers saved:\n"))
-    cat(sprintf("  - Upregulated genes: %d\n", nrow(upregulated)))
-    cat(sprintf("  - Downregulated genes: %d\n", nrow(downregulated)))
-  }
-  
-  # 3. Save average expression profiles
-  if (!is.null(analysis_results$avg_expression)) {
-    avg_exp <- analysis_results$avg_expression
-    avg_exp_df <- as.data.frame(avg_exp)
-    avg_exp_df$gene <- rownames(avg_exp_df)
-    
-    wb <- createWorkbook()
-    addWorksheet(wb, "average_expression")
-    writeData(wb, "average_expression", avg_exp_df)
-    saveWorkbook(wb, file.path(output_dir, "average_expression.xlsx"), overwrite = TRUE)
-  }
-  
-  # 4. Save pseudobulk expression profiles if present
-  if (!is.null(analysis_results$pseudobulk_expression)) {
-    pseudobulk_exp <- analysis_results$pseudobulk_expression
-    pseudobulk_exp_df <- as.data.frame(pseudobulk_exp)
-    pseudobulk_exp_df$gene <- rownames(pseudobulk_exp_df)
-    
-    wb <- createWorkbook()
-    addWorksheet(wb, "pseudobulk_expression")
-    writeData(wb, "pseudobulk_expression", pseudobulk_exp_df)
-    saveWorkbook(wb, file.path(output_dir, "pseudobulk_expression.xlsx"), overwrite = TRUE)
-  }
-  
-  # 5. Save top genes list
-  if (length(analysis_results$top_genes) > 0) {
-    # Convert list to data frame
-    max_genes <- max(sapply(analysis_results$top_genes, length))
-    top_genes_df <- data.frame(matrix(NA, nrow = max_genes, 
-                                      ncol = length(analysis_results$top_genes)))
-    colnames(top_genes_df) <- names(analysis_results$top_genes)
-    
-    for (cluster in names(analysis_results$top_genes)) {
-      top_genes_df[[cluster]] <- c(analysis_results$top_genes[[cluster]],
-                                   rep(NA, max_genes - length(analysis_results$top_genes[[cluster]])))
-    }
-    
-    wb <- createWorkbook()
-    addWorksheet(wb, "top_genes")
-    writeData(wb, "top_genes", top_genes_df)
-    saveWorkbook(wb, file.path(output_dir, "top_genes.xlsx"), overwrite = TRUE)
-  }
-  
-  # Create a summary file
-  summary_text <- c(
-    "Subset Analysis Results Summary",
-    "============================",
-    "",
-    "Comparison Details:",
-    paste("  Group 1:", analysis_results$metadata$group1_name, 
-          sprintf("(n=%d cells)", analysis_results$metadata$n_cells_group1)),
-    paste("  Group 2:", analysis_results$metadata$group2_name,
-          sprintf("(n=%d cells)", analysis_results$metadata$n_cells_group2)),
-    paste("  Mode:", analysis_results$metadata$mode),
-    "",
-    "Results:",
-    paste("  Overall DE genes:", 
-          ifelse(!is.null(analysis_results$overall_de), 
-                 nrow(analysis_results$overall_de), 0)),
-    paste("  Significant overall markers:", 
-          ifelse(!is.null(analysis_results$overall_de_significant), 
-                 nrow(analysis_results$overall_de_significant), 0)),
-    paste("  Clusters analyzed:", length(analysis_results$cluster_specific)),
-    paste("  Clusters with significant markers:",
-          ifelse(!is.null(analysis_results$cluster_specific_significant),
-                 length(analysis_results$cluster_specific_significant), 0)),
-    paste("  Conserved markers:", 
-          ifelse(!is.null(analysis_results$conserved_markers), 
-                 nrow(analysis_results$conserved_markers), 0)),
-    paste("  Significant conserved markers:", 
-          ifelse(!is.null(analysis_results$conserved_markers_significant), 
-                 nrow(analysis_results$conserved_markers_significant), 0)),
-    "",
-    "Files generated:",
-    "- overall_DE.xlsx: Overall differential expression results (all genes)",
-    paste0("    * Positive log2FC = higher in ", analysis_results$metadata$group1_name),
-    paste0("    * Negative log2FC = higher in ", analysis_results$metadata$group2_name),
-    "- overall_significant.xlsx: Significant overall markers (|avg_log2FC| > 0.5, p_val_adj < 0.01)",
-    paste0("    * upregulated tab: Genes higher in ", analysis_results$metadata$group1_name),
-    paste0("    * downregulated tab: Genes higher in ", analysis_results$metadata$group2_name),
-    "- cluster_specific_DE.xlsx: Differential expression results for each cluster (all genes)",
-    "- cluster_specific_significant.xlsx: Significant markers per cluster (|avg_log2FC| > 0.5, p_val_adj < 0.01)",
-    "    * One tab per cluster and direction (e.g., cluster_0_up, cluster_0_down)",
-    "    * Each tab sorted by fold change magnitude",
-    "- conserved_markers.xlsx: Markers conserved across clusters",
-    "- conserved_markers_significant.xlsx: Significant conserved markers (|avg_log2FC| > 0.5, p_val_adj < 0.01)",
-    "    * upregulated tab: Genes with positive fold change (sorted high to low)",
-    "    * downregulated tab: Genes with negative fold change (sorted low to high)",
-    "- pseudobulk_expression.xlsx: Pseudobulk expression profiles",
-    "- top_genes.xlsx: Top differential genes by cluster"
-  )
-  
-  writeLines(summary_text, file.path(output_dir, "analysis_summary.txt"))
-  
-  cat("Results saved to directory:", output_dir, "\n")
-  cat("Generated files:\n")
-  list.files(output_dir, pattern = "\\.xlsx$|\\.txt$") %>% 
-    paste0("- ", .) %>%
-    cat(sep = "\n")
-}
-
 # =============================================================================
 # cNMF
 # =============================================================================
@@ -2337,153 +896,6 @@ add_cnmf_to_seurat <- function(seurat_obj, usage) {
   
   return(seurat_obj)
 }
-## comparisons
-find_pattern_markers <- function(spectra_tpm,
-                                 spectra_score = NULL,
-                                 n_markers = 50,
-                                 method = "weighted_zscore",
-                                 min_score = 0,
-                                 exclude_shared = FALSE,
-                                 shared_threshold = 1.5) {
-  
-  stopifnot(is.matrix(spectra_tpm) || is.data.frame(spectra_tpm))
-  spectra_tpm <- as.matrix(spectra_tpm)
-  stopifnot(all(spectra_tpm >= 0))
-  
-  patterns <- colnames(spectra_tpm)
-  genes <- rownames(spectra_tpm)
-  n_patterns <- ncol(spectra_tpm)
-  
-  if (is.null(patterns)) patterns <- paste0("pattern_", seq_len(n_patterns))
-  if (is.null(genes)) stop("spectra_tpm must have rownames (gene names).")
-  
-  # Compute Z-scores per gene if not provided
-  if (is.null(spectra_score)) {
-    row_means <- rowMeans(spectra_tpm)
-    row_sds <- apply(spectra_tpm, 1, sd)
-    row_sds[row_sds == 0] <- 1  # avoid division by zero for constant rows
-    spectra_score <- (spectra_tpm - row_means) / row_sds
-  } else {
-    spectra_score <- as.matrix(spectra_score)
-    stopifnot(identical(dim(spectra_score), dim(spectra_tpm)))
-  }
-  
-  # Build per-gene, per-pattern stats (vectorized)
-  # For each gene and each pattern, compute the ratio to the best competing pattern
-  # and other useful quantities.
-  stats_list <- vector("list", n_patterns)
-  
-  for (i in seq_len(n_patterns)) {
-    tpm_this <- spectra_tpm[, i]
-    zscore_this <- spectra_score[, i]
-    
-    # Max loading across all OTHER patterns for each gene
-    if (n_patterns == 2) {
-      max_other <- spectra_tpm[, -i]
-    } else {
-      max_other <- apply(spectra_tpm[, -i, drop = FALSE], 1, max)
-    }
-    
-    ratio <- tpm_this / (max_other + 1e-10)
-    
-    stats_list[[i]] <- data.frame(
-      gene = genes,
-      pattern = patterns[i],
-      tpm = tpm_this,
-      zscore = zscore_this,
-      max_other_tpm = max_other,
-      ratio = ratio,
-      stringsAsFactors = FALSE
-    )
-  }
-  
-  marker_df <- do.call(rbind, stats_list)
-  rownames(marker_df) <- NULL
-  
-  # Apply minimum score filter
-  if (min_score > 0) {
-    marker_df <- marker_df[marker_df$tpm >= min_score, ]
-  }
-  
-  # Apply shared-gene exclusion filter
-  if (exclude_shared) {
-    marker_df <- marker_df[marker_df$ratio >= shared_threshold, ]
-  }
-  
-  # Compute the composite marker_score based on method
-  marker_df$marker_score <- switch(method,
-                                   
-                                   "weighted_zscore" = {
-                                     # Z-score captures specificity (how unusually high this gene loads on
-                                     # this pattern relative to its own distribution). Multiplying by
-                                     # log1p(TPM) upweights genes that are also highly expressed.
-                                     # log1p prevents a handful of very-high-TPM housekeeping genes from
-                                     # dominating; the log compression keeps magnitude informative but
-                                     # bounded.
-                                     marker_df$zscore * log1p(marker_df$tpm)
-                                   },
-                                   
-                                   "softmax_weighted" = {
-                                     # For each gene, compute softmax across patterns on TPM values.
-                                     # softmax(x_i) = exp(x_i) / sum(exp(x_j)) gives a specificity
-                                     # proportion that amplifies differences more than a linear proportion
-                                     # would. Multiply by TPM to weight by magnitude.
-                                     # Vectorized: subtract row max for numerical stability, then compute.
-                                     row_max <- apply(spectra_tpm, 1, max)
-                                     scaled <- spectra_tpm - row_max  # subtract max per row
-                                     exp_scaled <- exp(scaled)
-                                     softmax_mat <- exp_scaled / rowSums(exp_scaled)
-                                     score_mat <- softmax_mat * spectra_tpm
-                                     # Map back to the long-format marker_df
-                                     as.vector(score_mat[cbind(
-                                       match(marker_df$gene, genes),
-                                       match(marker_df$pattern, patterns)
-                                     )])
-                                   },
-                                   
-                                   "rank_product" = {
-                                     # Non-parametric approach: for each pattern, rank genes by
-                                     # (1) specificity (ratio to max_other) and (2) magnitude (tpm).
-                                     # Combine as reciprocal of the product of ranks. This is robust
-                                     # to skewed distributions and outliers. Genes that rank well on
-                                     # BOTH dimensions get the highest score.
-                                     rp_scores <- numeric(nrow(marker_df))
-                                     for (pat in patterns) {
-                                       idx <- which(marker_df$pattern == pat)
-                                       pat_data <- marker_df[idx, ]
-                                       n_genes_pat <- nrow(pat_data)
-                                       rank_spec <- rank(-pat_data$ratio, ties.method = "average")
-                                       rank_mag <- rank(-pat_data$tpm, ties.method = "average")
-                                       rp_scores[idx] <- 1 / (rank_spec * rank_mag)
-                                     }
-                                     rp_scores
-                                   },
-                                   
-                                   "ratio" = {
-                                     # Pure specificity baseline: fold-enrichment over best competitor.
-                                     # No magnitude weighting. Useful for comparison but tends to select
-                                     # low-expression genes that happen to be very pattern-specific.
-                                     marker_df$ratio
-                                   },
-                                   
-                                   stop("Unknown method: ", method,
-                                        ". Choose from: weighted_zscore, softmax_weighted, rank_product, ratio")
-  )
-  
-  # Select top markers per pattern
-  markers <- list()
-  for (pat in patterns) {
-    pat_df <- marker_df[marker_df$pattern == pat, ]
-    pat_df <- pat_df[order(pat_df$marker_score, decreasing = TRUE), ]
-    markers[[pat]] <- head(pat_df$gene, n_markers)
-  }
-  
-  return(list(
-    markers = markers,
-    marker_stats = marker_df,
-    method = method
-  ))
-}
 compare_pattern_usage <- function(usage, group1_cellids, group2_cellids = NULL,
                                   group_labels = c("infected", "uninfected")) {
   # If only one list given, derive the second as all remaining cells
@@ -2545,20 +957,17 @@ compare_pattern_usage <- function(usage, group1_cellids, group2_cellids = NULL,
   ))
 }
 ## Pattern usage comparison holding a covariate fixed
-# compare_pattern_usage() runs a bare Wilcoxon, which is exposed to any covariate
-# that differs between the groups. For splice+ vs splice- that covariate is viral
+# compare_pattern_usage() runs a bare Wilcoxon, exposed to any covariate that
+# differs between the groups. For splice+ vs splice- that covariate is viral
 # burden: a spliced UMI can only be seen in a cell that yields UMIs, so burden
 # predicts splice status through detection. Host depth is left out of the model.
-# Use this for a covariate that confounds the group label. For one that the
-# group label causes, such as host library size in SIV+ vs SIV-, matching is
-# the appropriate tool: see compare_pattern_usage_matched().
-# This fits, per pattern,
-#     usage ~ group + covariates
-# and reports the group coefficient as an adjusted difference in mean usage,
-# converted to a log2 fold change against the group2 mean so the value is on the
-# same scale as the unadjusted row. `covariates` is a data frame of cell-level
-# terms indexed by cellID; rows absent from it are dropped.
-# Returns the same list shape as compare_pattern_usage(), so it can be passed to
+# Use this for a confounder; for a covariate the group label causes, such as
+# host library size in SIV+ vs SIV-, use compare_pattern_usage_matched().
+# Fits usage ~ group + covariates per pattern and reports the group coefficient
+# as an adjusted difference in mean usage, converted to a log2 fold change
+# against the group2 mean so it sits on the scale of the unadjusted row.
+# `covariates` is a cell-level data frame indexed by cellID; rows absent from it
+# are dropped. Returns the compare_pattern_usage() shape, so it can be passed to
 # plot_pattern_enrichment() as another comparison.
 compare_pattern_usage_adjusted <- function(usage, group1_cellids, group2_cellids = NULL,
                                            covariates,
@@ -2618,20 +1027,18 @@ compare_pattern_usage_adjusted <- function(usage, group1_cellids, group2_cellids
        n_cells = c(group1 = length(g1), group2 = length(g2)))
 }
 ## Pattern usage comparison against a matched reference group
-# compare_pattern_usage_adjusted() removes a covariate by regression, which
-# biases the group effect when the covariate lies on the causal path from the
-# group label to the outcome rather than confounding it. Host library size is
-# such a covariate for SIV+ vs SIV-: the size gap holds in the highest-burden
-# cells, where a call cannot depend on sequencing depth, so it is a property of
-# infected cells and not a detection artifact. cNMF usage is compositional
-# (rows sum to 1), so depth does not inflate usage mechanically either, and each
-# program carries some of the size axis itself. Regressing size out therefore
-# removes signal that belongs to the contrast.
-# This draws reference cells to match the group1 distribution of `match_values`
-# over `n_bins` quantile bins, within each level of `strata` when given, and
-# compares the two at equal depth without modelling depth. Up to `ratio`
-# reference cells are drawn per group1 cell in a bin.
-# Returns the same list shape as compare_pattern_usage(), plus n_cells.
+# Regression (compare_pattern_usage_adjusted) biases the group effect when the
+# covariate lies on the causal path from the group label to the outcome rather
+# than confounding it. Host library size is such a covariate for SIV+ vs SIV-:
+# the size gap holds in the highest-burden cells, where a call cannot depend on
+# sequencing depth, so it is a property of infected cells, not a detection
+# artifact. cNMF usage is compositional (rows sum to 1), so depth does not
+# inflate usage mechanically either, and each program carries some of the size
+# axis itself. This instead draws reference cells matching the group1
+# distribution of `match_values` over `n_bins` quantile bins, within each level
+# of `strata` when given, up to `ratio` per group1 cell, and compares the two at
+# equal depth without modelling depth. Returns the compare_pattern_usage()
+# shape, plus n_cells.
 compare_pattern_usage_matched <- function(usage, group1_cellids, group2_cellids = NULL,
                                           match_values, strata = NULL, n_bins = 10,
                                           ratio = 5, seed = 1,
@@ -2669,83 +1076,6 @@ compare_pattern_usage_matched <- function(usage, group1_cellids, group2_cellids 
   result
 }
 
-### plotting
-plot_usage_heatmap <- function(usage, metadata = NULL, output_path = NULL) {
-  # Normalize usage per cell (row-wise)
-  usage_norm <- usage / rowSums(usage)
-  
-  # Set up annotation if metadata provided
-  if (!is.null(metadata)) {
-    # Ensure rownames match
-    common_cells <- intersect(rownames(usage_norm), rownames(metadata))
-    usage_norm <- usage_norm[common_cells, ]
-    annotation_row <- metadata[common_cells, , drop = FALSE]
-  } else {
-    annotation_row <- NA
-  }
-  
-  # Create heatmap
-  p <- pheatmap(
-    t(usage_norm),
-    cluster_rows = TRUE,
-    cluster_cols = TRUE,
-    show_colnames = FALSE,
-    color = viridis(100),
-    main = "cNMF Pattern Usage (normalized)",
-    annotation_col = if (!is.null(metadata)) annotation_row else NA,
-    silent = TRUE
-  )
-  
-  if (!is.null(output_path)) {
-    pdf(output_path, width = 12, height = 6)
-    print(p)
-    dev.off()
-    cat("Saved:", output_path, "\n")
-  }
-  
-  return(p)
-}
-plot_marker_heatmap <- function(spectra, markers, n_genes = 20, output_path = NULL) {
-  # Get top n genes for each pattern
-  all_marker_genes <- unique(unlist(lapply(markers, head, n_genes)))
-  
-  # Subset spectra to marker genes
-  spectra_subset <- spectra[all_marker_genes, ]
-  
-  # Z-score for visualization
-  spectra_scaled <- t(scale(t(spectra_subset)))
-  
-  # Create annotation for which pattern each gene belongs to
-  gene_pattern <- data.frame(
-    pattern = sapply(all_marker_genes, function(g) {
-      for (pat in names(markers)) {
-        if (g %in% head(markers[[pat]], n_genes)) return(pat)
-      }
-      return(NA)
-    }),
-    row.names = all_marker_genes
-  )
-  
-  p <- pheatmap(
-    spectra_scaled,
-    cluster_rows = FALSE,
-    cluster_cols = FALSE,
-    show_rownames = nrow(spectra_scaled) <= 50,
-    color = colorRampPalette(c("blue", "white", "red"))(100),
-    main = paste("Top", n_genes, "Marker Genes per Pattern"),
-    annotation_row = gene_pattern,
-    silent = TRUE
-  )
-  
-  if (!is.null(output_path)) {
-    pdf(output_path, width = 8, height = 12)
-    print(p)
-    dev.off()
-    cat("Saved:", output_path, "\n")
-  }
-  
-  return(p)
-}
 plot_pattern_violins <- function(comparison_result, output_path = NULL,
                                  group_names = c("infected", "uninfected"),
                                  colors = c("#E41A1C", "gray70")) {
@@ -2807,55 +1137,14 @@ plot_pattern_violins <- function(comparison_result, output_path = NULL,
   
   return(p)
 }
-plot_log2fc <- function(comparison_result, output_path = NULL,
-                        group_names = c("infected", "uninfected"),
-                        colors = c("#E41A1C", "gray70")) {
-  comparison_df <- comparison_result$comparison
-  stat_df <- comparison_result$stats
-
-  plot_df <- merge(comparison_df, stat_df[, c("pattern", "p_adj")], by = "pattern")
-
-  pattern_order <- paste0("Pattern_", sort(as.numeric(gsub("Pattern_", "", plot_df$pattern))))
-  plot_df$pattern <- factor(plot_df$pattern, levels = pattern_order)
-  plot_df$row <- paste0(group_names[1], " / ", group_names[2])
-
-  plot_df$stars <- cut(plot_df$p_adj,
-                       breaks = c(-Inf, 0.001, 0.01, 0.05, Inf),
-                       labels = c("***", "**", "*", ""))
-  plot_df$stars <- as.character(plot_df$stars)
-
-  lim <- max(abs(plot_df$log2_fold_change), na.rm = TRUE)
-  if (!is.finite(lim) || lim == 0) lim <- 1
-
-  p <- ggplot(plot_df, aes(x = pattern, y = row, fill = log2_fold_change)) +
-    geom_tile(color = "black", linewidth = 0.3) +
-    geom_text(aes(label = stars), size = 4, vjust = 0.75) +
-    scale_fill_gradient2(low = colors[2], mid = "white", high = colors[1],
-                         midpoint = 0, limits = c(-lim, lim),
-                         name = "log2 FC") +
-    labs(x = NULL, y = NULL) +
-    coord_fixed() +
-    theme_classic() +
-    theme(axis.line = element_blank(),
-          axis.ticks = element_blank(),
-          axis.text.x = element_text(angle = 0))
-
-  ggsave(output_path, p, width = max(4, 0.6 * nlevels(plot_df$pattern) + 2), height = 2)
-
-  return(p)
-}
-# Multi-contrast cNMF pattern enrichment in a single plot object, so every
-# contrast shares one pattern axis that lines up with the pattern-weight UMAP
-# row above it. Contrasts keep their own log2 fold-change scale (the SIV+ and
-# splice+ comparisons have very different dynamic ranges, and one shared scale
-# flattens the smaller one).
+# Multi-contrast cNMF pattern enrichment as one plot object, one row per
+# contrast, each on its own log2 fold-change scale.
 #
 # comparisons: list of lists, one per row, each with
 #   result: a compare_pattern_usage() return value
 #   label:  row label, e.g. "SIV+ vs SIV-"
 #   colors: c(high, low) fill for enriched / depleted in group 1
-# pattern_labels: optional named vector or character vector of program names
-#   (e.g. "Naive & quiescent"), in Pattern_1..Pattern_k order.
+# pattern_labels: optional program names, in Pattern_1..Pattern_k order.
 # styles: any of "dots", "lollipop", "tiles"; each is written to
 #   <output_prefix>_<style>.pdf and returned in the named list.
 plot_pattern_enrichment <- function(comparisons,
@@ -2898,11 +1187,9 @@ plot_pattern_enrichment <- function(comparisons,
                                                     pattern_levels[is.na(pattern_display)])
   }
 
-  # Programs the annotation marks as contaminants are dropped before anything
-  # is scaled. They are not the biology the panel is about, and one of them can
-  # carry a degenerate fold change (a program with near-zero usage in one group)
-  # that sets the colour limits for its whole row and flattens every real
-  # difference. Their numbers are still printed by the calling chunk.
+  # Programs the annotation marks as contaminants are not the biology the panel
+  # is about, so they are dropped before anything is scaled. Their numbers are
+  # still printed by the calling chunk.
   if (!is.null(drop_pattern_labels) && nzchar(drop_pattern_labels)) {
     drop <- grepl(drop_pattern_labels, pattern_display, ignore.case = TRUE)
     if (any(drop)) {
@@ -2932,11 +1219,10 @@ plot_pattern_enrichment <- function(comparisons,
                                      labels = c("***", "**", "*", ""))),
       neglog10_p  = pmin(-log10(pmax(p_adj, 1e-300)), max_neglog10_p)) %>%
     dplyr::mutate(scale_group = paste(color_high, color_low, sep = "|")) %>%
-    # Rows drawn in the same colours are the same contrast before and after a
-    # control, so they share one limit: a dot that pales after adjustment has
-    # actually shrunk, rather than having been rescaled. `fc_limits` overrides
-    # the computed limit (named by the group's legend title, or one number for
-    # every group), which is how several panels are put on one scale.
+    # Rows drawn in the same colours are one contrast before and after a control,
+    # so they share a limit: a dot that pales after adjustment has shrunk rather
+    # than been rescaled. `fc_limits` overrides the computed limit, named by the
+    # group's legend title or one number for every group.
     dplyr::group_by(scale_group) %>%
     dplyr::mutate(fc_limit = {
       lim <- max(abs(log2_fold_change), na.rm = TRUE)
@@ -2950,10 +1236,9 @@ plot_pattern_enrichment <- function(comparisons,
       enrichment$contrast[enrichment$scale_group == g][1]))),
     character(1))
   if (!is.null(fc_limits)) {
-    # Names are matched on the legend title, and failing that on the title with
-    # its trailing "(... controlled)" qualifier removed, so one set of limits
-    # covers a panel drawn from every row and a panel drawn from the controlled
-    # rows alone, where the group's first row carries the qualifier.
+    # Matched on the legend title, and failing that on the title with its
+    # trailing "(... controlled)" qualifier removed, so one set of limits covers
+    # both a panel of every row and a panel of the controlled rows alone.
     family <- function(x) trimws(sub("\\s*\\([^()]*\\)$", "", x))
     wanted <- if (is.null(names(fc_limits))) {
       rep(unname(fc_limits)[1], length(group_levels))
@@ -2986,11 +1271,7 @@ plot_pattern_enrichment <- function(comparisons,
       legend.text        = ggplot2::element_text(size = 7),
       plot.margin        = ggplot2::margin(6, 10, 4, 6))
 
-  # Legend titles sit above their key so they cannot collide with the tick
-  # labels of the neighbouring legend. Each row carries its own fold-change
-  # scale, so the title names the row in full: dropping the qualifier gives two
-  # rows the same title and leaves no way to tell which colorbar belongs to
-  # which line. `order` fixes the legends in row order, top row first.
+  # `order` fixes the legends in row order, top row first.
   colorbar_guide <- function(i) ggplot2::guide_colorbar(title.position = "top",
                                                         title.hjust = 0, order = i)
 
@@ -3062,9 +1343,7 @@ plot_pattern_enrichment <- function(comparisons,
     plots$lollipop <- p_lolli
   }
 
-  # Tiles: the current look, cleaned up -- one plot object, no tile borders,
-  # own fill scale per contrast, fold change printed in the tile and stars only
-  # where significant.
+  # Tiles: fold change printed in the tile, stars only where significant.
   if ("tiles" %in% styles) {
     p_tiles <- ggplot2::ggplot(enrichment,
                                ggplot2::aes(x = program, y = contrast))
@@ -3282,15 +1561,14 @@ compare_methods_to_reference <- function(
   }
 
   # All three metrics are functions of the two empirical CDFs, so for
-  # non-negative integer counts one pair of tabulated histograms serves all of
-  # them, in closed form and with no sorting:
+  # non-negative integer counts one pair of tabulated histograms serves all
+  # three, in closed form and with no sorting:
   #   KS = max |F1 - F2|
-  #   W1 = sum |F1 - F2|   (support is the integers, so each bin has width 1)
+  #   W1 = sum |F1 - F2|   (integer support, so every bin has width 1)
   #   JS = sqrt of the Jensen-Shannon divergence, log2
-  # This replaces table(factor(...)), ks.test, philentropy::JSD and
-  # transport::wasserstein1d, and agrees with compute_distances_general to
-  # floating-point tolerance. The bootstrap and permutation loops call it tens of
-  # thousands of times per variable, which is why the closed form is used here.
+  # Agrees with compute_distances_general to floating-point tolerance. The
+  # bootstrap and permutation loops call it tens of thousands of times per
+  # variable, hence the closed form over ks.test/philentropy/transport.
   compute_distances <- function(vec1, vec2) {
     is_count <- function(v) {
       is.numeric(v) && length(v) > 0 && all(is.finite(v)) &&
@@ -3584,20 +1862,17 @@ plot_wasserstein_bars <- function(
 # PTPRC / CD45 per-cell isoform classifier
 # =============================================================================
 
-# Assign a single CD45 isoform per cell from per-UMI read counts
-# (<gene>_UMI_read_counts_full.csv with cellID, UMI, category, read_count).
-# Each UMI's variable exons A/B/C (exon4/5/6) are scored as included (an
-# inclusion read), excluded (a skip-junction read), or undetermined; a UMI is
-# labelled by its included exons (RA/RB/RC/RAB/.../RABC) and is "fully
-# resolved" when all three exons are determined. RO is reserved for molecules
-# shown to exclude all three cassettes, matching the UCHL1 epitope, which only
-# exists on the isoform lacking A, B and C. A molecule with no inclusion but
-# incomplete exclusion evidence is merely RA-negative -- it cannot name an
-# isoform, and is dropped rather than counted as RO.
-# Per cell:
-#   Rule 1: if any UMI is fully resolved, take the most abundant fully-resolved
-#           isoform (the molecule carrying the most exon information wins).
-#   Rule 2: otherwise take the most abundant observed-inclusion label.
+# Assign one CD45 isoform per cell from per-UMI read counts
+# (<gene>_UMI_read_counts_full.csv: cellID, UMI, category, read_count).
+# Each UMI's variable exons A/B/C (exon4/5/6) score as included (an inclusion
+# read), excluded (a skip-junction read) or undetermined; the UMI is labelled by
+# its included exons (RA/RB/RC/RAB/.../RABC) and is "fully resolved" when all
+# three are determined. RO is reserved for molecules shown to exclude all three
+# cassettes, matching the UCHL1 epitope, which exists only on the isoform
+# lacking A, B and C. A molecule with no inclusion but incomplete exclusion
+# evidence is merely RA-negative: it cannot name an isoform and is dropped.
+# Per cell: Rule 1, the most abundant fully-resolved isoform if any UMI is fully
+# resolved; Rule 2, otherwise the most abundant observed-inclusion label.
 # Returns a data.frame: cellID, isoform, n_umi, resolved (TRUE = Rule 1).
 classify_ptprc_isoforms <- function(umi_file, min_reads_per_umi = 2) {
   reads <- utils::read.csv(umi_file)
@@ -3636,7 +1911,6 @@ classify_ptprc_isoforms <- function(umi_file, min_reads_per_umi = 2) {
       .groups  = "drop"
     )
 }
-
 
 # =============================================================================
 # Public human HIV datasets (Collora et al. 2022, HIV-seq/Frouard 2026)
@@ -3728,7 +2002,6 @@ hxb2_per_cell <- function(sample, bamsort_dir) {
                  dplyr::all_of(hiv_categories))
 }
 
-
 # qc: named SeuratPipeline QC arguments (min_features, max_features,
 # max_counts, max_mito) for this dataset; empty keeps the pipeline defaults.
 load_human_sample <- function(sample, counts_root, rds_dir, qc = list()) {
@@ -3766,14 +2039,13 @@ marker_counts <- function(obj, genes) {
 # Protein CD4 T gates, one cell list per dataset. Sample names are disjoint
 # between datasets, so the lists are stacked and matched on cellID alone.
 #
-# The two lists were gated by different rules because the panels differ. HIVseq
-# carries no isotype control, so adtgate_final.R uses an Otsu cut per marker
-# plus a depth guard, scored against the CD4 T counts that paper reports.
-# Collora carries three isotype controls, so collora_adtgate.R applies the rule
-# that paper defines: positive above the 90th percentile of its own isotype
-# values. Collora is gated CD3+CD4+ with no CD8 term -- its cells are CD4+ T by
-# negative selection, leaving protein CD8 at isotype background where no
-# threshold can separate it.
+# The two were gated by different rules because the panels differ. HIVseq
+# carries no isotype control, so adtgate_final.R uses a per-marker Otsu cut plus
+# a depth guard, scored against the CD4 T counts that paper reports. Collora
+# carries three isotype controls, so collora_adtgate.R applies that paper's
+# rule: positive above the 90th percentile of its own isotype. Collora is gated
+# CD3+CD4+ with no CD8 term, its cells being CD4+ T by negative selection, which
+# leaves protein CD8 at isotype background where no threshold can separate it.
 #
 # A dataset with no list here is left ungated, handled by `missing` below.
 adt_cd4t_paths <- c(
@@ -3806,17 +2078,16 @@ adt_cd4t_table <- function(paths = adt_cd4t_paths) {
 
 # Per-cell CD4 T call from the ADT gate, with a per-library fallback for the
 # libraries whose ADT is too shallow to gate (PID145, three of four PID8026).
-# `missing` is what happens to those libraries: "gene" runs the `cd4t_pass`
-# gene gate on them, "pass" keeps every cell, "drop" removes every cell.
-# Returns the call and the gate that made it, one entry per cell, so a table
-# built on a mix of gates can say which library used which.
+# `missing` sets what happens to those: "gene" runs the `cd4t_pass` gene gate,
+# "pass" keeps every cell, "drop" removes every cell. Returns the call and the
+# gate that made it, one entry per cell, so a table built on a mix of gates can
+# say which library used which.
 #
-# Protein reaches the gate two ways. HIVseq and Collora were gated by their own
-# scripts into the `adt_cd4t_paths` cell lists, keyed by library. A dataset that
-# instead carries its protein panel inside the Seurat object supplies a per-cell
-# `cell_type_adt` call made when the object was built (Giron, whose CITE-seq
-# panel arrives in the same cellranger matrix as the transcriptome); that call
-# is used directly, so those cells never fall through to `missing`.
+# Protein reaches the gate two ways: HIVseq and Collora through the
+# `adt_cd4t_paths` cell lists keyed by library, and a dataset carrying its panel
+# inside the Seurat object through a per-cell `cell_type_adt` call made when the
+# object was built (Giron, whose CITE-seq panel arrives in the same cellranger
+# matrix as the transcriptome). Those cells never fall through to `missing`.
 adt_cd4t_pass <- function(obj, paths = adt_cd4t_paths,
                           missing = c("gene", "pass", "drop")) {
   missing <- match.arg(missing)
@@ -3940,26 +2211,23 @@ apply_cd4t_gate <- function(df, sample_names, viral_cols,
     select(-cd4t, -excluded)
 }
 
-# The HIV+ call, in the terms each source paper states it in. Both rules read
-# the same bamsort tables; they differ in whether a cell qualifies on reads or
-# on molecules.
-#   "reads"   >= min_hiv_reads HXB2 reads per barcode. This is HIV-seq's own
-#             published rule (Frouard et al.), and the rule our SIV and Giron
-#             TenX arms use, so it is the default.
-#   "collora" the rule of Collora et al. (Immunity 2022,
-#             doi 10.1016/j.immuni.2022.03.004) STAR Methods: at least 2 HIV-1
-#             UMIs, or 4 reads of a single UMI. Strictly more stringent than
-#             "reads" at min_hiv_reads = 2, since 2 UMIs carry >= 2 reads and 4
-#             reads of one UMI are 4 reads.
+# The HIV+ call, in the terms each source paper states it in. All rules read the
+# same bamsort tables; they differ in whether a cell qualifies on reads or on
+# molecules.
+#   "reads"   >= min_hiv_reads HXB2 reads per barcode. HIV-seq's own published
+#             rule (Frouard et al.), and the rule our SIV and Giron TenX arms
+#             use, so it is the default.
+#   "collora" Collora et al. (Immunity 2022, doi 10.1016/j.immuni.2022.03.004)
+#             STAR Methods: at least 2 HIV-1 UMIs, or 4 reads of a single UMI.
+#             Strictly more stringent than "reads" at min_hiv_reads = 2.
+#   "frouard" Frouard et al. (Nat Commun 2026, doi 10.1038/s41467-026-68797-3):
+#             one HIV transcript, i.e. a single HXB2 UMI, set from HIV-
+#             uninfected control donors in whom "not a single HIV transcript was
+#             identified". Looser than "reads" at min_hiv_reads = 2.
 # The read clause needs `primary_count` in the bamsort tables: without it a read
 # spanning two adjacent junction windows is charged to both, so a 2-read
 # molecule reads as 4 and clears the clause on its own. hxb2_per_cell prefers
 # that column and warns when a table predates it.
-#   "frouard" the rule of Frouard et al. (Nat Commun 2026,
-#             doi 10.1038/s41467-026-68797-3): one HIV transcript, i.e. a single
-#             HXB2 UMI, which they set from HIV-uninfected control donors in whom
-#             "not a single HIV transcript was identified". Looser than "reads"
-#             at min_hiv_reads = 2, since a lone UMI of one read clears it.
 hiv_collora_min_umis      <- 2   # HIV-1 UMIs per barcode
 hiv_collora_min_umi_reads <- 4   # reads of a single UMI
 hiv_frouard_min_umis      <- 1   # HIV transcripts (UMIs) per barcode
@@ -4018,7 +2286,6 @@ attach_hxb2 <- function(obj, samples, bamsort_dir, rule = "reads") {
   obj$HXB2_SS    <- pick("SS")
   obj$HXB2_MS    <- pick("MS")
 
-  
   # CD4 T called by ADT protein when available, else by `cd4t_pass` gene gate
   cd4t <- if (hiv_tcell_gate) adt_cd4t_pass(obj, missing = "gene")
           else                list(pass = TRUE, gate = "none")
@@ -4226,79 +2493,6 @@ public_load_all <- function(datasets, conditions, loader = public_reload) {
   invisible(NULL)
 }
 
-# Condition totals, then the participants they pool, then the libraries of each
-# participant with the share of their participant's total that each contributes
-public_report <- function(res, dataset, conditions) {
-  ordered <- function(df) df %>%
-    mutate(condition = factor(condition, levels = conditions)) %>%
-    arrange(condition, desc(HIV_pos))
-
-  cat("\n=== Public data:", dataset, "- joint GRCh38+HXB2, HIV+ on",
-      hiv_pos_rule_text(public_hiv_rule(dataset)), "===\n")
-  print(as.data.frame(ordered(res$summary)))
-
-  # The condition totals average over participants whose HIV+ rates differ by
-  # more than an order of magnitude, so these rates are the ones to compare.
-  # Each row here is one integrated object.
-  cat("\n--- per participant ---\n")
-  print(as.data.frame(ordered(res$by_participant)))
-
-  cat("\n--- per library, with its share of the participant ---\n")
-  print(as.data.frame(ordered(res$by_sample) %>%
-    group_by(condition, participant) %>%
-    mutate(across(c(HIV_pos, splice_pos),
-                  ~ if (sum(.x) > 0) round(100 * .x / sum(.x), 1)
-                    else rep(NA_real_, length(.x)),
-                  .names = "pct_of_{.col}")) %>%
-    ungroup() %>%
-    select(condition, participant, sample, gate, n_cells, n_CD4_Tcells,
-           HIV_pos, pct_HIV_pos, pct_of_HIV_pos,
-           splice_pos, pct_splice_pos, pct_of_splice_pos)))
-  invisible(res)
-}
-
-
-# Minimum cells per group for a FindMarkers contrast
-public_min_cells <- 3
-# Genes dropped before DEG
-public_exclude_genes <- c("CD4", "CD8A", "CD8B")
-
-# splice+/splice- among the HIV+ cells; every other cell gets `other`
-public_splice_call <- function(obj, other = "other") {
-  spliced <- obj$HXB2_SS.MS + obj$HXB2_MS
-  dplyr::case_when(obj$HIV_status == "HIV+" & spliced >  0 ~ "splice+",
-                   obj$HIV_status == "HIV+" & spliced == 0 ~ "splice-",
-                   TRUE                                    ~ other)
-}
-
-# Per-cell table of UMAP coordinates, HXB2 counts and the two identity calls.
-public_cell_table <- function(obj) {
-  coords <- Embeddings(obj, reduction = "umap")
-  tibble(cellID     = colnames(obj),
-         UMAP1      = coords[, 1],
-         UMAP2      = coords[, 2],
-         hxb2       = obj$hxb2,
-         spliced    = obj$HXB2_SS.MS + obj$HXB2_MS,
-         HIV_status = obj$HIV_status,
-         infect_identity = ifelse(HIV_status == "HIV+",
-                                  "infected", "uninfected"),
-         splice_identity = public_splice_call(obj))
-}
-
-public_contrasts <- list(
-  infected = list(
-    suffix = "_DEG_infected.csv",
-    ident.1 = "infected", ident.2 = "uninfected",
-    colors = c(infected = "red", uninfected = "gray50"),
-    groups = function(obj) ifelse(obj$HIV_status == "HIV+",
-                                  "infected", "uninfected")),
-  splice = list(
-    suffix = "_DEG_splice.csv",
-    ident.1 = "splice+", ident.2 = "splice-",
-    colors = c(`splice+` = "purple", `splice-` = "orange"),
-    groups = function(obj) public_splice_call(obj, other = NA_character_))
-)
-
 # Accessors for the global results objects the Load chunk assigns
 public_res <- function(dataset) {
   get(public_datasets[[dataset]]$results, envir = globalenv())
@@ -4324,46 +2518,6 @@ public_walk_groups <- function(dataset, handler) {
   invisible(NULL)
 }
 
-# The per-sample tables of every loaded dataset
-public_all_by_sample <- function() {
-  purrr::map_dfr(public_loaded(), function(dataset) {
-    public_res(dataset)$by_sample %>% mutate(dataset = dataset, .before = 1)
-  })
-}
-
-# Sequencing depth per library, read from the metrics_summary.csv
-public_cellranger_metrics <- function(dataset, samples) {
-  counts_root <- public_paths[[dataset]][["counts"]]
-  purrr::map_dfr(samples, function(sample) {
-    f <- file.path(counts_root, paste0("GRCh38_HXB2_", sample), "outs",
-                   "metrics_summary.csv")
-    if (!file.exists(f)) {
-      warning("No metrics_summary.csv for ", dataset, " ", sample)
-      return(NULL)
-    }
-    m <- read.csv(f, check.names = FALSE, colClasses = "character")
-    num <- function(col) as.numeric(gsub("[,%]", "", m[[col]]))
-    tibble(sample               = sample,
-           cells                = num("Estimated Number of Cells"),
-           reads                = num("Number of Reads"),
-           reads_per_cell       = num("Mean Reads per Cell"),
-           median_umis_per_cell = num("Median UMI Counts per Cell"))
-  })
-}
-
-# Categorical colors for the two public datasets
-public_dataset_colors <- c(Collora = "#2a78d6", HIVseq = "#eb6834")
-
-# --- CD4 T subsets, public HIV signature, set-level tests ----------------------
-# CD4 T subset marker sets. A cell's subset call is the highest of their
-# AddModuleScore scores.
-cd4t_subset_markers <- list(
-  naive_Tcm = c("CCR7", "SELL", "TCF7", "LEF1", "IL7R", "BACH2", "NOSIP", "NR3C2"),
-  Tem       = c("S100A4", "S100A6", "GZMK", "KLRB1", "ANXA1", "CXCR3", "AHR"),
-  cytotoxic = c("GZMB", "GZMA", "NKG7", "PRF1", "KLRD1", "CTSW", "CST7", "CCL5", "HOPX"),
-  Treg      = c("FOXP3", "IKZF2", "IL2RA", "CTLA4", "TNFRSF18"),
-  cycling   = c("MKI67", "TOP2A", "CDK1", "BIRC5", "STMN1", "NUSAP1"))
-
 # Genes called up (or down) in HIV+ vs HIV- CD4 T cells: p_val_adj < pval and
 # |avg_log2FC| > fc in at least min_tables of the given per-participant
 # FindMarkers tables, and never significant the other way.
@@ -4384,10 +2538,7 @@ public_hiv_signature <- function(files, fc, pval, min_tables) {
        PUBLIC_HIV_DOWN = calls$gene[calls$down >= min_tables & calls$up   == 0])
 }
 
-# Human MSigDB Hallmark gene symbols, named without the HALLMARK_ prefix. Reads
-# msigdbr; if the package will not load (its curl dependency needs
-# libssl.so.10, absent from these nodes), reads msigdbr's own local cache of the
-# same MSigDB release.
+# Human MSigDB Hallmark gene symbols
 hallmark_gene_sets <- function(cache = "~/.cache/R/msigdbr/msigdb.2026.1.Hs.H.rds") {
   hallmark <- tryCatch(
     msigdbr::msigdbr(species = "Homo sapiens", collection = "H") %>%
@@ -4414,66 +2565,6 @@ matched_mean_null <- function(values, strata, positive, nperm) {
                                       pools, wanted, SIMPLIFY = FALSE))))
 }
 
-# Bar of the per-dataset mean with one dot per library on top
-public_bar_dots <- function(df, title, group_col = "dataset",
-                            colors = public_dataset_colors, saveas = NULL,
-                            width = NULL, height = NULL) {
-  df <- df %>% filter(!is.na(value)) %>% mutate(.group = .data[[group_col]])
-  if (is.null(width))  width  <- 3.4 + 2.0 * n_distinct(df$condition)
-  if (is.null(height)) height <- 1.6 + 1.4 * n_distinct(df$metric)
-
-  # Unpaired Wilcoxon per facet, skipped where only one group is present
-  tests <- df %>%
-    group_by(condition, metric) %>%
-    group_modify(~ {
-      sets <- sort(unique(.x$.group))
-      vals <- split(.x$value, factor(.x$.group, levels = sets))
-      paired <- length(sets) == 2
-      tibble(group1 = sets[1],
-             group2 = if (paired) sets[2] else NA_character_,
-             n1 = length(vals[[1]]),
-             n2 = if (paired) length(vals[[2]]) else 0L,
-             p  = if (paired) suppressWarnings(
-                    wilcox.test(vals[[1]], vals[[2]])$p.value) else NA_real_,
-             y  = max(.x$value) * 1.13)
-    }) %>%
-    ungroup() %>%
-    mutate(label = ifelse(is.na(p), "", sprintf("p = %.3g", p)))
-
-  plot <- ggplot(df, aes(x = .group, y = value, fill = .group)) +
-    stat_summary(fun = mean, geom = "col", width = 0.6, alpha = 0.85) +
-    geom_point(aes(color = .group), size = 2.4, shape = 21, fill = "white",
-               stroke = 0.9,
-               position = position_jitter(width = 0.13, height = 0, seed = 1)) +
-    geom_text(data = tests, aes(x = 1.5, y = y, label = label),
-              inherit.aes = FALSE, size = 3, color = "#3d3d38") +
-    facet_grid(metric ~ condition, scales = "free_y", switch = "y") +
-    scale_fill_manual(values = colors) +
-    scale_color_manual(values = colors) +
-    scale_y_continuous(labels = scales::comma,
-                       expand = expansion(mult = c(0, 0.22))) +
-    labs(title = title,
-         subtitle = "Bars are group means; each dot is one library",
-         x = NULL, y = NULL) +
-    theme_classic(base_size = 11) +
-    theme(legend.position = "none",
-          plot.subtitle = element_text(color = "#5c5c57", size = 9),
-          strip.background = element_blank(),
-          strip.placement = "outside",
-          strip.text.y.left = element_text(angle = 0))
-
-  if (!is.null(saveas)) {
-    dir.create(dirname(saveas), recursive = TRUE, showWarnings = FALSE)
-    ggsave(saveas, plot, width = width, height = height)
-  }
-  print(as.data.frame(tests %>%
-    select(condition, metric, group1, n1, group2, n2, p)))
-  plot
-}
-
-# Colors for the HIV-seq library chemistries
-public_library_colors <- c(NOTHING = "#2a78d6", Primer = "#eb6834")
-
 # Per-library HIV+/splice+ counts WITHOUT integration. `libraries` needs a
 # sample, condition and participant column.
 public_library_table <- function(dataset, libraries) {
@@ -4493,9 +2584,7 @@ public_library_table <- function(dataset, libraries) {
   })
 }
 
-## TRUE when every input is readable, naming anything that is not. Every input
-## now lives under its figure's own tree, so a missing file means the step that
-## writes it has not been run -- there is no second location to check.
+## TRUE when every input is readable, naming anything that is not
 check_migrated <- function(...) {
   paths <- c(...)
   missing <- paths[!file.exists(paths)]
@@ -4503,18 +2592,12 @@ check_migrated <- function(...) {
   length(missing) == 0
 }
 
-## read.csv/readRDS wrapper that returns NULL with the message above instead of
-## erroring when the file is absent.
+## don't error if absent
 read_migrated <- function(path, reader = read.csv, ...) {
   if (!check_migrated(path)) return(NULL)
   reader(path, ...)
 }
 
-# The Figure1 SIV samples were counted in three separate cellranger campaigns, so
-# their outs/ directories sit under three different experiment trees. `runs` is
-# the single source of truth for where each sample's cellranger output came from;
-# collect_cellranger_outs() flattens it into one directory so downstream code
-# only needs a sample name.
 figure1_cellranger_runs <- data.frame(
   samples = c("D0", "D195", "D83", "Invitro", "Pacute", "W0", "W2"),
   runs = c(
@@ -4525,14 +2608,14 @@ figure1_cellranger_runs <- data.frame(
   stringsAsFactors = FALSE
 )
 
-## Copy each sample's cellranger outs/ into one flat counts directory, so that
-## every reader can build a path as <counts.dir>/outs_<sample>/<matrix>/.
-## `runs` needs a samples and a runs column, where runs is the cellranger run
-## directory that contains outs/.
-## `contents` limits what gets copied; the default takes only the two matrix
-## directories, which is what Read10X and SeuratPipeline need. The BAMs are
-## multiple GB per sample and the bamsort pipeline reads them from the original
-## runs, so they are left in place. Pass contents = NULL to copy all of outs/.
+figure4_cellranger_runs <- data.frame(
+  samples = "GFP_invitro",
+  runs = paste0(data.root,
+                "Figure4/singleCell/counts/concat/reseq2/Mmul_10_mac239_GFP_GFP_GEX"),
+  stringsAsFactors = FALSE
+)
+
+## Reorganize cellranger outs/ into one flat counts directory
 collect_cellranger_outs <- function(runs = figure1_cellranger_runs,
                                     counts.dir = paste0(data.root, "Figure1/singleCell/counts/"),
                                     contents = c("raw_feature_bc_matrix",
@@ -4557,8 +2640,7 @@ collect_cellranger_outs <- function(runs = figure1_cellranger_runs,
     }
     to_copy <- to_copy[file.exists(to_copy)]
 
-    # An empty matrix directory copies "successfully" while leaving the
-    # destination unreadable, so treat a source with no files as a failure
+    # Treat a source with no files as a failure
     n_files <- length(list.files(to_copy, recursive = TRUE))
 
     if (!dir.exists(source_outs)) {
@@ -4597,31 +2679,25 @@ collect_cellranger_outs <- function(runs = figure1_cellranger_runs,
 
 # Viral-specific sequencing saturation from a Cell Ranger molecule_info.h5.
 #
-# Cell Ranger's metrics_summary.csv reports one Sequencing Saturation for the
-# whole transcriptome. A claim about viral reads needs the saturation of the
-# viral feature alone, which requires the per-molecule read counts in
-# molecule_info.h5. Saturation is Cell Ranger's own definition restricted to
-# that one feature,
+# metrics_summary.csv reports one Sequencing Saturation for the whole
+# transcriptome. A claim about viral reads needs the viral feature alone, which
+# requires the per-molecule read counts in molecule_info.h5. Cell Ranger's own
+# definition, restricted to that one feature,
 #
 #     saturation = 1 - (viral UMIs) / (viral reads)
 #
 # where viral reads sum the `count` field over molecules assigned to the viral
-# feature. It is reported twice: over all barcodes, and over the cell-called
-# barcodes in barcode_info/pass_filter.
+# feature. Reported twice: over all barcodes, and over the cell-called barcodes
+# in barcode_info/pass_filter.
 #
-# Also reports the estimated viral library complexity C from the
-# Lander-Waterman/Poisson relation
+# Also reports the estimated viral library complexity C from the Lander-Waterman
+# /Poisson relation observed UMIs = C * (1 - exp(-reads / C)), solved by
+# bisection. UMIs/C is the fraction of the viral library the run recovered,
+# which bounds how many molecules deeper sequencing could add.
 #
-#     observed UMIs = C * (1 - exp(-reads / C))
-#
-# solved for C by bisection. The observed fraction UMIs/C says how much of the
-# viral library the run recovered, which bounds how many additional molecules
-# deeper sequencing could add.
-#
-# molecule_info.h5 holds one record per molecule -- tens of millions for a single
-# library -- so feature_idx is read in full once and `count` and `barcode_idx`
-# are then read only at the viral positions, rather than pulling three vectors
-# of that length into memory.
+# molecule_info.h5 holds one record per molecule -- tens of millions for a
+# single library -- so feature_idx is read in full once and `count` and
+# `barcode_idx` only at the viral positions.
 tenx_viral_saturation <- function(molecule_info_h5, viral_feature = "mac239") {
   # rhdf5 is an optional Bioconductor package in packages.R, attached here
   # rather than at startup like the rest of the genomics stack.

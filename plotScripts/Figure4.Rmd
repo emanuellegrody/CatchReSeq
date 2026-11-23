@@ -21,6 +21,51 @@ source("functions.R")
 
 ## Extraction
 
+### Seurat object
+
+Prerequisites: the cellranger matrix for the GFP in vitro gene-expression
+library, under
+`Figure4/singleCell/counts/outs_GFP_invitro/filtered_feature_bc_matrix/`. The
+cellranger run is upstream input, not produced by this pipeline; use
+`collect_cellranger_outs()` to put a run directory into the `outs_<sample>`
+layout.
+
+Writes the two things the rest of this section reads: the Seurat object
+(`SeuratPipeline(rds = TRUE)` saves it under `Seurat/RDS/GFP_invitro.rds`) and
+the UMAP coordinate table carrying each cell's cluster, library size and
+normalized GFP expression (`Seurat/UMAPcoords/GFP_invitroUMAP_coords.csv`). Run
+this before `### combined counts` and before the Barcode section.
+
+```{r}
+counts.dir <- paste0(data.root, "Figure4/singleCell/counts/")
+seurat.dir <- paste0(data.root, "Figure4/singleCell/Seurat/")
+output.dir <- paste0(seurat.dir, "UMAPcoords/")
+dir.create(output.dir, recursive = TRUE, showWarnings = FALSE)
+
+sample_name <- "GFP_invitro"
+input.dir <- paste0(counts.dir, "outs_", sample_name,
+                    "/filtered_feature_bc_matrix/")
+
+seurat_obj <- SeuratPipeline(input.dir, sample_name,
+                             output_dir = seurat.dir,
+                             plots = TRUE, rds = TRUE)
+
+# Cell-level coordinates and clusters, plus the one feature the barcode panels
+# color by. SeuratPipeline drops the mac239 contig so the host transcriptome
+# alone drives QC and clustering; the GFP transgene is a feature of its own in
+# the Mmul_10_mac239_GFP reference and is kept, read from the normalized layer.
+umap_coords <- Embeddings(seurat_obj, reduction = "umap")
+sample_df <- data.frame(cellID = colnames(seurat_obj), stringsAsFactors = FALSE)
+sample_df$GFP     <- GetAssayData(seurat_obj, assay = "RNA", layer = "data")["GFP", ]
+sample_df$UMAP1   <- umap_coords[, 1]
+sample_df$UMAP2   <- umap_coords[, 2]
+sample_df$cluster <- Idents(seurat_obj)
+sample_df$size    <- colSums(GetAssayData(seurat_obj, assay = "RNA", layer = "counts"))
+sample_df$sample  <- sample_name
+
+write.csv(sample_df, paste0(output.dir, sample_name, "UMAP_coords.csv"))
+```
+
 ### combined counts
 
 Prerequisites: `extractionScripts/submissionScripts/Figure4/stepThree_process_SIV.sh` and `extractionScripts/submissionScripts/Figure4/stepThree_process_SIV_TenX.sh`
@@ -80,7 +125,7 @@ full_processed <- full_join(tenx_processed, care_processed,
   mutate(total = log1p(rowSums(select(., -cellID), na.rm = TRUE)))
 
 result <- data.frame(cellID = unique(as.character(umap_data$cellID))) %>%
-  left_join(umap_data %>% select(-any_of("V2"), -sample), by = "cellID") %>%
+  left_join(umap_data %>% select(-any_of("GFP"), -sample), by = "cellID") %>%
   left_join(barcode_data, by = "cellID") %>%
   left_join(full_processed, by = "cellID")
 result$barcode[is.na(result$barcode)] <- "none"
@@ -128,7 +173,7 @@ dir.create(output.dir, recursive = TRUE, showWarnings = FALSE)
 
 side_reactions <- c("GFP_barcode_1", "GFP_barcode_9")
 
-UMAP_data <- read.csv(paste0(umap.dir, "GFP_invitro_GFP.csv"),
+UMAP_data <- read.csv(paste0(umap.dir, "GFP_invitroUMAP_coords.csv"),
                       row.names = "X") %>%
   select(cellID, UMAP1, UMAP2, cluster, size)
 
