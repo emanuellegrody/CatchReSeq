@@ -274,7 +274,10 @@ cd ~/CatchReSeq/extractionScripts/submissionScripts/PublicData
 DATA_ROOT=~/care bash runAll_publicData.sh download
 ```
 
-This will need a cluster (the downloads are `--array` jobs).
+This will need a cluster (the downloads are `--array` jobs). The accession
+lists and the ENA manifest ship with the repository, beside each dataset's
+`samples_manifest.csv` under `submissionScripts/PublicData/`, so the clone is
+all the download stage needs.
 
 **4. Install the dependencies.** Section 2 above. R and the three packages
 `bamsort_process.R` needs are enough for steps 5 and 7; the full

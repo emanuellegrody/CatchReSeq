@@ -184,6 +184,9 @@ if wants download; then
     # FASTQs. Array sizes are derived rather than taken from the #SBATCH
     # directives, so adding a sample to a manifest does not silently leave its
     # runs undownloaded.
+    # sbatch forwards the exported environment, so each download job reads the
+    # accession list tracked beside these submission scripts and writes under
+    # this run's DATA_ROOT rather than the defaults compiled into the worker.
     NEW_DEPS=""
 
     N_COLLORA=$(tail -n +2 "${SUB}/HIV/samples_manifest.csv" | tr -d '\r' \
@@ -193,24 +196,27 @@ if wants download; then
     id="$(submit $(dep_arg) --array="1-${N_COLLORA}%8" "${PIPE}/publicData/download_collora_sra.sh")"
     echo "  job ${id:-<dry>}"; [ -n "$id" ] && NEW_DEPS="${NEW_DEPS:+${NEW_DEPS}:}$id"
 
-    N_HIVSEQ=$(grep -c . "${PUBLIC}/HIVseq/scripts/HIVseq_SRR.txt")
-    require_count "$N_HIVSEQ" "HIV-seq SRA runs" "${PUBLIC}/HIVseq/scripts/HIVseq_SRR.txt"
+    N_HIVSEQ=$(grep -c . "${SUB}/HIVseq/HIVseq_SRR.txt")
+    require_count "$N_HIVSEQ" "HIV-seq SRA runs" "${SUB}/HIVseq/HIVseq_SRR.txt"
     echo "--- HIV-seq: ${N_HIVSEQ} SRA runs ---"
+    export ACC_LIST="${SUB}/HIVseq/HIVseq_SRR.txt" DEST="${PUBLIC}/HIVseq/fastq"
     id_hs="$(submit $(dep_arg) --array="1-${N_HIVSEQ}%8" "${PIPE}/publicData/download_sra.sh")"
     echo "  job ${id_hs:-<dry>}"
 
     # The 16 runs whose barcode read SRA flags as technical: re-dumped with
     # --include-technical once the first pass has been attempted.
-    N_REDL=$(grep -c . "${PUBLIC}/HIVseq/scripts/redownload_SRR.txt")
-    require_count "$N_REDL" "HIV-seq re-dump runs" "${PUBLIC}/HIVseq/scripts/redownload_SRR.txt"
+    N_REDL=$(grep -c . "${SUB}/HIVseq/redownload_SRR.txt")
+    require_count "$N_REDL" "HIV-seq re-dump runs" "${SUB}/HIVseq/redownload_SRR.txt"
     echo "--- HIV-seq: ${N_REDL} runs re-dumped with --include-technical ---"
     redl_dep=""; [ -n "$id_hs" ] && redl_dep="--dependency=afterany:${id_hs}"
+    export ACC_LIST="${SUB}/HIVseq/redownload_SRR.txt" DEST="${PUBLIC}/HIVseq/fastq"
     id="$(submit $redl_dep --array="1-${N_REDL}%6" "${PIPE}/publicData/redownload_sra.sh")"
     echo "  job ${id:-<dry>}"; [ -n "$id" ] && NEW_DEPS="${NEW_DEPS:+${NEW_DEPS}:}$id"
 
-    N_GIRON=$(cut -f1 "${PUBLIC}/Gironetal2024/scripts/download_manifest.tsv" | sort -u | grep -c . || true)
-    require_count "$N_GIRON" "Giron ENA runs" "${PUBLIC}/Gironetal2024/scripts/download_manifest.tsv"
+    N_GIRON=$(cut -f1 "${SUB}/Giron/download_manifest.tsv" | sort -u | grep -c . || true)
+    require_count "$N_GIRON" "Giron ENA runs" "${SUB}/Giron/download_manifest.tsv"
     echo "--- Giron: ${N_GIRON} ENA runs ---"
+    export MANIFEST="${SUB}/Giron/download_manifest.tsv" DEST="${PUBLIC}/Gironetal2024/fastq"
     id="$(submit $(dep_arg) --array="1-${N_GIRON}%4" "${PIPE}/publicData/download_ena.sh")"
     echo "  job ${id:-<dry>}"; [ -n "$id" ] && NEW_DEPS="${NEW_DEPS:+${NEW_DEPS}:}$id"
 

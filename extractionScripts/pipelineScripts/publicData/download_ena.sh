@@ -20,8 +20,11 @@
 #   run  sample  url  md5  bytes
 set -euo pipefail
 
-DEST="${DEST:-/projects/b1042/GoyalLab/egrody/publicData/Gironetal2024/fastq}"
-MANIFEST="${MANIFEST:-/projects/b1042/GoyalLab/egrody/publicData/Gironetal2024/scripts/download_manifest.tsv}"
+# Data root for this dataset. CARE_PUBLIC_ROOT names the publicData directory
+# directly; DATA_ROOT names its parent, and is what runAll_publicData.sh sets.
+PUBLIC="${CARE_PUBLIC_ROOT:-${DATA_ROOT:-/projects/b1042/GoyalLab/egrody}/publicData}"
+DEST="${DEST:-${PUBLIC}/Gironetal2024/fastq}"
+MANIFEST="${MANIFEST:-${PUBLIC}/Gironetal2024/scripts/download_manifest.tsv}"
 mkdir -p "${DEST}"
 cd "${DEST}"
 

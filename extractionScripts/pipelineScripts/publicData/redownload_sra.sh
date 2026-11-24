@@ -29,8 +29,11 @@ module purge
 module load sratoolkit/3.2.1
 module load pigz/2.7-gcc-12.3.0
 
-DEST="${DEST:-/projects/b1042/GoyalLab/egrody/publicData/HIVseq/fastq}"
-ACC_LIST="${ACC_LIST:-/projects/b1042/GoyalLab/egrody/publicData/HIVseq/scripts/redownload_SRR.txt}"
+# Data root for this dataset. CARE_PUBLIC_ROOT names the publicData directory
+# directly; DATA_ROOT names its parent, and is what runAll_publicData.sh sets.
+PUBLIC="${CARE_PUBLIC_ROOT:-${DATA_ROOT:-/projects/b1042/GoyalLab/egrody}/publicData}"
+DEST="${DEST:-${PUBLIC}/HIVseq/fastq}"
+ACC_LIST="${ACC_LIST:-${PUBLIC}/HIVseq/scripts/redownload_SRR.txt}"
 mkdir -p "${DEST}"
 cd "${DEST}"
 
