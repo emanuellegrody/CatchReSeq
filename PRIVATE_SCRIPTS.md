@@ -43,7 +43,7 @@ The withheld scripts affect only **stepTwo** of the extraction chain:
 ## Unaffected processes
 
 **Re-running everything downstream of stepTwo** including figure plotting.
-The stepTwo outputs are deposited on [Google Drive](https://drive.google.com/drive/folders/1VZqFvq4PPePjBebWIqZQCKbCONigd2-u?usp=sharing) (see the README).
+The stepTwo outputs are deposited on [Google Drive](https://drive.google.com/drive/folders/1DAGRXQcvU5kC3DeqRspy2HYSW_7QHFoU?usp=sharing) (see the README).
 
 **Re-running cellranger**, from the deposited sequencing data.
 

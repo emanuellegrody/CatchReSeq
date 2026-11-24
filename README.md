@@ -230,7 +230,7 @@ cd ~/CatchReSeq
 **3. Download the deposit into the data directory.** It is in two places. Until
 the manuscript is published, take it from the Google Drive folder:
 
-<https://drive.google.com/drive/folders/1VZqFvq4PPePjBebWIqZQCKbCONigd2-u?usp=sharing>
+<https://drive.google.com/drive/folders/1DAGRXQcvU5kC3DeqRspy2HYSW_7QHFoU?usp=sharing>
 
 In a browser, use *Download* on the folder itself rather than on each
 subfolder, so the per-figure tree is preserved; Drive serves it as a zip:
@@ -244,7 +244,7 @@ From the command line, [`gdown`](https://github.com/wkentaro/gdown)
 
 ```sh
 cd ~/care && gdown --folder \
-  'https://drive.google.com/drive/folders/1VZqFvq4PPePjBebWIqZQCKbCONigd2-u'
+  'https://drive.google.com/drive/folders/1DAGRXQcvU5kC3DeqRspy2HYSW_7QHFoU'
 ```
 
 From publication, the same files are the GEO supplementary archive:
@@ -416,7 +416,7 @@ The clonal expansion data in Figure 4 is processed separately by Nextflow:
 
 ### What's included in the Google Drive link
 
-The deposit is the [Google Drive folder](https://drive.google.com/drive/folders/1VZqFvq4PPePjBebWIqZQCKbCONigd2-u?usp=sharing) until publication
+The deposit is the [Google Drive folder](https://drive.google.com/drive/folders/1DAGRXQcvU5kC3DeqRspy2HYSW_7QHFoU?usp=sharing) until publication
 and the GEO supplementary archive after it; section 4, step 3 has both download
 routes. It holds the **cellranger count matrices**
 and the **stepTwo alignment tables** -- the output of the withheld
